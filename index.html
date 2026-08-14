@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<html lang="th">
+<head><meta charset="UTF-8"><title>เป้าหมาย & Scoreboard</title></head>
+<body>
+<script type="module">
+  import { isLoggedIn } from './js/session.js';
+  window.location.replace(isLoggedIn() ? './app.html' : './login.html');
+</script>
+</body>
+</html>

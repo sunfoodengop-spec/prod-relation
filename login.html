@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>เข้าสู่ระบบ — เป้าหมาย & Scoreboard</title>
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="card login-card">
+      <div class="login-logo">
+        <div class="mark">🎯 เป้าหมาย &amp; Scoreboard</div>
+        <div class="tag">ระบบบริหารเป้าหมาย ทีเด็ด และผลงานประจำเดือน</div>
+      </div>
+
+      <div id="error-slot"></div>
+
+      <!-- STEP 1: LOGIN -->
+      <form id="login-form">
+        <div class="field">
+          <label for="emp-code">รหัสพนักงาน</label>
+          <input id="emp-code" autocomplete="username" placeholder="เช่น 443757" required>
+        </div>
+        <div class="field">
+          <label for="password">รหัสผ่าน</label>
+          <input id="password" type="password" autocomplete="current-password" placeholder="เริ่มต้นใช้รหัสพนักงานเป็นรหัสผ่าน" required>
+        </div>
+        <button class="btn btn-primary" type="submit" style="width:100%" id="login-btn">เข้าสู่ระบบ</button>
+      </form>
+
+      <!-- STEP 2: FORCE CHANGE PASSWORD (hidden by default) -->
+      <form id="reset-form" style="display:none">
+        <p class="text-muted" style="font-size:13.5px;margin-top:0">เข้าสู่ระบบครั้งแรก กรุณาตั้งรหัสผ่านใหม่ก่อนใช้งาน</p>
+        <div class="field">
+          <label for="new-password">รหัสผ่านใหม่</label>
+          <input id="new-password" type="password" placeholder="อย่างน้อย 6 ตัวอักษร" required minlength="6">
+        </div>
+        <div class="field">
+          <label for="confirm-password">ยืนยันรหัสผ่านใหม่</label>
+          <input id="confirm-password" type="password" required minlength="6">
+        </div>
+        <button class="btn btn-primary" type="submit" style="width:100%" id="reset-btn">บันทึกและเข้าสู่ระบบ</button>
+      </form>
+
+      <div class="hint-box">
+        บัญชีเริ่มต้น: Username และ Password คือรหัสพนักงานของคุณ (พนักงานที่ไม่มีรหัส ให้ใช้ <code>123456</code> / <code>123456</code>)
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./js/login.js"></script>
+</body>
+</html>
