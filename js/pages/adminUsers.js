@@ -1,5 +1,7 @@
 import { api } from '../api.js';
 import { toast, openModal, closeModal, confirmDialog, escapeHtml as esc } from '../ui.js';
+import { openImportModal } from '../importCsv.js';
+import { USERS_IMPORT_HEADERS, importUsersFromRows } from '../userImport.js';
 
 const ROLE_LABEL = { STAFF: 'เจ้าหน้าที่', SUPERVISOR: 'หัวหน้างาน', ADMIN: 'ผู้ดูแลระบบ' };
 const TRACK_LABEL = { MANAGEMENT: 'สายบริหาร', SPECIALIST: 'สายผู้ชำนาญการ' };
@@ -28,6 +30,8 @@ export async function render(container, { user }) {
       </div>
       <div class="flex gap-8">
         <button class="btn" id="manage-dept-btn">🗂️ จัดการแผนก</button>
+        <button class="btn" id="export-users-btn">📤 Export Excel</button>
+        <button class="btn" id="import-users-btn">📥 Import Excel</button>
         <button class="btn btn-primary" id="add-user-btn">+ เพิ่มพนักงาน</button>
       </div>
     </div>
@@ -36,6 +40,8 @@ export async function render(container, { user }) {
 
   document.getElementById('add-user-btn').onclick = () => openUserModal(null);
   document.getElementById('manage-dept-btn').onclick = () => openDeptManagerModal();
+  document.getElementById('export-users-btn').onclick = () => exportUsersExcel();
+  document.getElementById('import-users-btn').onclick = () => openUsersImportModal();
   document.getElementById('search-box').oninput = () => renderTable();
   document.getElementById('dept-filter').onchange = () => renderTable();
 
@@ -322,4 +328,46 @@ async function resetPassword(userId) {
     await api.adminResetPassword(userId);
     toast('รีเซ็ตรหัสผ่านเรียบร้อย');
   } catch (err) { toast(err.message, 'error'); }
+}
+
+// ============================================================================
+// Export / Import พนักงานเป็น Excel
+// ============================================================================
+async function exportUsersExcel() {
+  try {
+    const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
+    const rows = allUsers.map(u => ({
+      'รหัสพนักงาน': u.emp_code, 'ชื่อ': u.first_name, 'นามสกุล': u.last_name, 'ชื่อเล่น': u.nickname || '',
+      'ตำแหน่ง': u.position_title, 'แผนก': deptLabelsForUser(u),
+      'รหัสแผนก': u.department || '', 'ระดับ': u.org_level,
+      'สาย': TRACK_LABEL[u.track] || u.track, 'รักษาการ': u.is_acting ? 'TRUE' : 'FALSE',
+      'สิทธิ์': ROLE_LABEL[u.role] || u.role,
+      'รหัสหัวหน้า': allUsers.find(x => x.user_id === u.supervisor_id)?.emp_code || '',
+      'ชื่อหัวหน้า': supervisorName(u.supervisor_id),
+    }));
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [{ wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 24 }, { wch: 20 }, { wch: 14 }, { wch: 8 }, { wch: 16 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'พนักงาน');
+    XLSX.writeFile(wb, `รายชื่อพนักงาน_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    toast('Export เรียบร้อย');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function openUsersImportModal() {
+  const prefillRows = allUsers.map(u => [
+    u.emp_code, u.first_name, u.last_name, u.nickname || '', u.department || '',
+    u.org_level, u.track, u.is_acting ? 'TRUE' : 'FALSE', u.role,
+    allUsers.find(x => x.user_id === u.supervisor_id)?.emp_code || '',
+  ]);
+  openImportModal({
+    title: 'รายชื่อพนักงาน', headers: USERS_IMPORT_HEADERS, blankFilename: 'รายชื่อพนักงาน.csv',
+    hint: 'จับคู่ด้วย "รหัสพนักงาน" — ถ้ามีอยู่แล้วจะ<strong>เขียนทับ</strong>ข้อมูลเดิม ถ้าไม่พบจะสร้างใหม่ · แผนกใส่เป็นรหัส (dept_key) คั่นด้วยคอมม่าถ้ามีมากกว่า 1 แผนก · เรียงแถวก่อน-หลังแบบไหนก็ได้ ระบบจะผูกหัวหน้าให้ถูกต้องเสมอ',
+    prefillRows,
+    onImport: async (rows) => {
+      const result = await importUsersFromRows(rows, allUsers);
+      await load();
+      return result;
+    },
+  });
 }
