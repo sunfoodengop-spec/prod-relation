@@ -15,6 +15,8 @@ let currentUser = null;
 let subordinateIds = new Set(); // สำหรับ SUPERVISOR เช็คสิทธิ์ลบ (Admin ไม่ต้องเช็ค)
 let lastContainer = null;
 let colorIndex = new Map(); // dept_key -> 0..5 (สำหรับสีพื้นหลังคอลัมน์)
+let activeTab = 'chart'; // 'chart' | 'reorder'
+let zoomPct = Number(localStorage.getItem('org_zoom_pct')) || 100;
 
 function deptKeysOf(p) {
   return (p.department || '').split(',').filter(Boolean);
@@ -37,12 +39,117 @@ export async function render(container, ctx) {
     try { (await api.getSubordinates()).forEach(s => subordinateIds.add(s.user_id)); } catch { /* ignore */ }
   }
 
+  renderShell(container);
+}
+
+function renderShell(container) {
+  container.innerHTML = `
+    <div class="card mb-16" style="padding:10px 14px">
+      <div class="flex-between" style="flex-wrap:wrap;gap:10px">
+        <div class="org-tabs">
+          <button class="btn btn-sm ${activeTab === 'chart' ? 'active' : ''}" data-tab="chart">🕸️ ผังองค์กร</button>
+          ${currentUser.role === 'ADMIN' ? `<button class="btn btn-sm ${activeTab === 'reorder' ? 'active' : ''}" data-tab="reorder">🔀 จัดเรียงคอลัมน์</button>` : ''}
+        </div>
+        ${activeTab === 'chart' ? `
+          <div class="org-zoom-bar">
+            <button class="btn btn-sm" id="zoom-out-btn" title="ซูมออก">－</button>
+            <span class="zoom-label" id="zoom-label">${zoomPct}%</span>
+            <button class="btn btn-sm" id="zoom-in-btn" title="ซูมเข้า">＋</button>
+            <button class="btn btn-sm btn-ghost" id="zoom-reset-btn">รีเซ็ต 100%</button>
+          </div>
+        ` : ''}
+      </div>
+    </div>
+    <div id="org-tab-content"></div>
+  `;
+
+  container.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { activeTab = b.dataset.tab; renderShell(container); });
+
+  if (activeTab === 'chart') {
+    document.getElementById('zoom-out-btn').onclick = () => setZoom(zoomPct - 25);
+    document.getElementById('zoom-in-btn').onclick = () => setZoom(zoomPct + 25);
+    document.getElementById('zoom-reset-btn').onclick = () => setZoom(100);
+    renderChartTab();
+  } else {
+    renderReorderTab();
+  }
+}
+
+function setZoom(pct) {
+  zoomPct = Math.max(25, Math.min(150, pct));
+  localStorage.setItem('org_zoom_pct', String(zoomPct));
+  const label = document.getElementById('zoom-label');
+  if (label) label.textContent = zoomPct + '%';
+  const canvas = document.querySelector('.org-tree-canvas');
+  if (canvas) canvas.style.zoom = zoomPct / 100;
+}
+
+function renderChartTab() {
+  const target = document.getElementById('org-tab-content');
   // คนที่ไม่มีแผนก (เช่น GM/ผู้บริหาร) วาดเป็นแถวคานกลางเหนือ Matrix แผนก
   const topPeople = allPeople.filter(p => deptKeysOf(p).length === 0);
   const rest = allPeople.filter(p => deptKeysOf(p).length > 0);
 
-  drawTree(topPeople, rest, container);
+  drawTree(topPeople, rest, target);
+  setZoom(zoomPct);
   allPeople.forEach(p => loadAchievementBadge(p.user_id));
+}
+
+// ============================================================================
+// แท็บจัดเรียงคอลัมน์แผนก — ปรับลำดับได้ตรงนี้เลยโดยไม่ต้องไปหน้า Admin
+// ============================================================================
+function renderReorderTab() {
+  const target = document.getElementById('org-tab-content');
+  target.innerHTML = `
+    <div class="card">
+      <div class="card-title">จัดเรียงลำดับคอลัมน์แผนก (ซ้าย → ขวา ในผังองค์กร)</div>
+      <p class="text-muted" style="margin-top:-8px;font-size:13px">กด ↑ / ↓ เพื่อสลับลำดับ มีผลทันทีกับหน้าผังองค์กรของทุกคน</p>
+      <div id="dept-reorder-list"></div>
+    </div>
+  `;
+  renderReorderList();
+}
+
+function renderReorderList() {
+  const list = document.getElementById('dept-reorder-list');
+  const sorted = [...departments].sort((a, b) => a.sort_order - b.sort_order);
+  if (!sorted.length) {
+    list.innerHTML = `<div class="empty-state"><div class="icon">🗂️</div>ยังไม่มีแผนก — ไปเพิ่มที่หน้า "จัดการพนักงาน" ก่อน</div>`;
+    return;
+  }
+  list.innerHTML = sorted.map((d, i) => `
+    <div class="dept-reorder-row">
+      <div class="flex gap-8">
+        <span class="handle">${i + 1}</span>
+        <span>${esc(d.label)}</span>
+        <span class="text-dim" style="font-size:12px">(${esc(d.dept_key)})</span>
+      </div>
+      <div class="flex gap-8">
+        <button class="btn btn-sm btn-ghost" data-up="${esc(d.dept_key)}" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button class="btn btn-sm btn-ghost" data-down="${esc(d.dept_key)}" ${i === sorted.length - 1 ? 'disabled' : ''}>↓</button>
+      </div>
+    </div>
+  `).join('');
+  list.querySelectorAll('[data-up]').forEach(b => b.onclick = () => swapDeptOrder(b.dataset.up, -1));
+  list.querySelectorAll('[data-down]').forEach(b => b.onclick = () => swapDeptOrder(b.dataset.down, 1));
+}
+
+async function swapDeptOrder(deptKey, dir) {
+  const sorted = [...departments].sort((a, b) => a.sort_order - b.sort_order);
+  const idx = sorted.findIndex(d => d.dept_key === deptKey);
+  const swapIdx = idx + dir;
+  if (swapIdx < 0 || swapIdx >= sorted.length) return;
+  const a = sorted[idx], b = sorted[swapIdx];
+  const aOrder = a.sort_order, bOrder = b.sort_order;
+  try {
+    await Promise.all([
+      api.upsertDepartment(a.dept_key, a.label, bOrder),
+      api.upsertDepartment(b.dept_key, b.label, aOrder),
+    ]);
+    a.sort_order = bOrder; b.sort_order = aOrder;
+    renderReorderList();
+    toast('ปรับลำดับคอลัมน์แล้ว');
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // ============================================================================
