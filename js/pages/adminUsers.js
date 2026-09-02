@@ -264,6 +264,7 @@ function openAddDepartmentModal(onAdded) {
 function openDeptManagerModal() {
   const backdrop = openModal(`
     <h3 style="margin-top:0">🗂️ จัดการแผนก</h3>
+    <p class="text-muted" style="font-size:13px;margin-top:-6px">ลำดับที่นี่ = ลำดับคอลัมน์ในหน้าผังองค์กร (ซ้าย→ขวา)</p>
     <div id="dept-list" class="mb-16"></div>
     <button class="btn btn-primary" id="add-dept-btn">+ เพิ่มแผนกใหม่</button>
     <div class="flex gap-8 mt-16" style="justify-content:flex-end">
@@ -271,15 +272,44 @@ function openDeptManagerModal() {
     </div>
   `);
   const renderList = () => {
-    backdrop.querySelector('#dept-list').innerHTML = allDepartments.length
-      ? `<table><thead><tr><th>รหัส</th><th>ชื่อ</th></tr></thead><tbody>
-          ${allDepartments.map(d => `<tr><td class="text-muted">${esc(d.dept_key)}</td><td>${esc(d.label)}</td></tr>`).join('')}
+    const sorted = [...allDepartments].sort((a, b) => a.sort_order - b.sort_order);
+    backdrop.querySelector('#dept-list').innerHTML = sorted.length
+      ? `<table><thead><tr><th>รหัส</th><th>ชื่อ</th><th></th></tr></thead><tbody>
+          ${sorted.map((d, i) => `<tr>
+            <td class="text-muted">${esc(d.dept_key)}</td><td>${esc(d.label)}</td>
+            <td class="flex gap-8">
+              <button class="btn btn-sm btn-ghost" data-up="${esc(d.dept_key)}" ${i === 0 ? 'disabled' : ''}>↑</button>
+              <button class="btn btn-sm btn-ghost" data-down="${esc(d.dept_key)}" ${i === sorted.length - 1 ? 'disabled' : ''}>↓</button>
+            </td>
+          </tr>`).join('')}
         </tbody></table>`
       : `<div class="text-dim" style="font-size:13px">ยังไม่มีแผนก</div>`;
+
+    backdrop.querySelectorAll('[data-up]').forEach(b => b.onclick = () => swapOrder(b.dataset.up, -1));
+    backdrop.querySelectorAll('[data-down]').forEach(b => b.onclick = () => swapOrder(b.dataset.down, 1));
   };
+
+  async function swapOrder(deptKey, dir) {
+    const sorted = [...allDepartments].sort((a, b) => a.sort_order - b.sort_order);
+    const idx = sorted.findIndex(d => d.dept_key === deptKey);
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    const a = sorted[idx], b = sorted[swapIdx];
+    const aOrder = a.sort_order, bOrder = b.sort_order;
+    try {
+      await Promise.all([
+        api.upsertDepartment(a.dept_key, a.label, bOrder),
+        api.upsertDepartment(b.dept_key, b.label, aOrder),
+      ]);
+      a.sort_order = bOrder; b.sort_order = aOrder;
+      renderList();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
   renderList();
   backdrop.querySelector('#close-btn').onclick = () => closeModal(backdrop);
   backdrop.querySelector('#add-dept-btn').onclick = () => openAddDepartmentModal((newDept) => {
+    newDept.sort_order = Math.max(0, ...allDepartments.map(d => d.sort_order)) + 1;
     allDepartments.push(newDept);
     renderList();
     renderTable();

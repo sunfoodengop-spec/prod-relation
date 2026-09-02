@@ -162,7 +162,12 @@ function drawTree(topPeople, rest, container) {
   });
   const totalHeight = y - ROW_GAP + 20;
 
-  // ---- เส้นเชื่อมแบบ "เส้นบัส" คงที่ต่อระดับหัวหน้า (ไม่ผันแปรทีละคู่) -------
+  // ---- เส้นเชื่อมแบบ "เส้นบัส" ไล่ตามลำดับชั้น ห้ามข้ามสาย ----------------
+  // เส้นจะวิ่งลงตรงใต้หัวหน้า (แนวตั้งคงที่) ไปจนถึง "บัสของระดับที่อยู่เหนือ
+  // ลูกน้องขึ้นไป 1 ขั้น" เท่านั้นถึงจะเลี้ยวหาลูกน้อง — แม้สายบังคับบัญชาจะ
+  // ข้ามระดับจริง (เช่น ตำแหน่งกลางว่าง) เส้นก็จะยังไล่ผ่านทีละชั้นแนวตั้ง
+  // ไม่ตัดเฉียงข้ามคอลัมน์แผนกอื่นกลางแถว
+  const allLevelsSorted = [...new Set(allPeople.map(p => p.org_level))].sort((a, b) => b - a);
   const links = [];
   allPeople.forEach(p => {
     if (!p.supervisor_id) return;
@@ -170,7 +175,9 @@ function drawTree(topPeople, rest, container) {
     const from = nodePos.get(p.supervisor_id);
     const to = nodePos.get(p.user_id);
     if (!from || !to || !sup) return;
-    const bus = busY[sup.org_level] ?? (from.y + CARD_H / 2 + 20);
+    const nearestAboveChild = allLevelsSorted.filter(lv => lv > p.org_level).sort((a, b) => a - b)[0];
+    const busLevel = (nearestAboveChild !== undefined && nearestAboveChild <= sup.org_level) ? nearestAboveChild : sup.org_level;
+    const bus = busY[busLevel] ?? (from.y + CARD_H / 2 + 20);
     links.push(`<path d="M ${from.x} ${from.y + CARD_H / 2} V ${bus} H ${to.x} V ${to.y - CARD_H / 2}" class="org-link" fill="none" />`);
   });
 
