@@ -12,6 +12,7 @@ const ERROR_MESSAGES = {
   CANNOT_ADOPT_TACTIC_AS_GOAL: 'ไม่สามารถพลิกทีเด็ดเป็นเป้าหมายได้โดยตรง',
   GOAL_NOT_FOUND: 'ไม่พบเป้าหมายนี้',
   CANNOT_HOLD_OWN_GOAL: 'ไม่สามารถถือเป้าร่วมกับเป้าหมายของตัวเองได้',
+  CANNOT_DELETE_SELF: 'ไม่สามารถลบบัญชีของตัวเองได้',
 };
 
 function friendlyError(err) {
@@ -55,11 +56,17 @@ export const api = {
   getOrgChart: () => call('get_org_chart'),
   upsertUser: (u) => call('upsert_user', {
     p_target_user_id: u.user_id ?? null, p_emp_code: u.emp_code, p_first_name: u.first_name,
-    p_last_name: u.last_name, p_nickname: u.nickname ?? null, p_position_title: u.position_title,
-    p_department: u.department ?? null, p_org_level: u.org_level, p_supervisor_id: u.supervisor_id ?? null,
-    p_role: u.role,
+    p_last_name: u.last_name, p_nickname: u.nickname ?? null, p_departments: u.departments ?? '',
+    p_org_level: u.org_level, p_track: u.track ?? 'MANAGEMENT', p_is_acting: u.is_acting ?? false,
+    p_supervisor_id: u.supervisor_id ?? null, p_role: u.role,
   }),
   adminResetPassword: (targetUserId) => call('admin_reset_password', { p_target_user_id: targetUserId }),
+  deactivateUser: (targetUserId) => call('deactivate_user', { p_target_user_id: targetUserId }),
+  listDepartments: () => call('list_departments'),
+  upsertDepartment: (deptKey, label, sortOrder) => call('upsert_department', {
+    p_dept_key: deptKey, p_label: label, p_sort_order: sortOrder ?? 0,
+  }),
+  listPositionTitles: () => call('list_position_titles'),
 
   // Goals / Tactics
   listGoals: (targetUserId, year) => call('list_goals', { p_target_user_id: targetUserId, p_year: year }),
@@ -79,8 +86,11 @@ export const api = {
   releaseSharedGoal: (goalId) => call('release_shared_goal', { p_goal_id: goalId }),
 
   // Scoreboard
-  upsertScoreboard: (s) => call('upsert_scoreboard', {
-    p_goal_id: s.goal_id, p_month_num: s.month_num, p_actual_val: s.actual_val ?? null,
+  upsertScoreboardDaily: (s) => call('upsert_scoreboard_daily', {
+    p_goal_id: s.goal_id, p_entry_date: s.entry_date, p_actual_val: s.actual_val ?? null,
+  }),
+  getScoreboardDaily: (targetUserId, year, month) => call('get_scoreboard_daily', {
+    p_target_user_id: targetUserId, p_year: year, p_month_num: month,
   }),
   getScoreboard: (targetUserId, year) => call('get_scoreboard', { p_target_user_id: targetUserId, p_year: year }),
   submitMonthlyReport: (year, month) => call('submit_monthly_report', { p_year: year, p_month_num: month }),

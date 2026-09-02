@@ -4,9 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>เข้าสู่ระบบ — เป้าหมาย & Scoreboard</title>
+<script>document.documentElement.setAttribute('data-theme', localStorage.getItem('gsb_theme') || 'dark');</script>
 <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
+  <button class="btn btn-sm theme-toggle-btn" id="theme-toggle-btn" style="position:fixed;top:16px;right:16px" title="สลับโหมดสว่าง/มืด">☀️</button>
   <div class="login-wrap">
     <div class="card login-card">
       <div class="login-logo">
@@ -50,5 +52,11 @@
   </div>
 
   <script type="module" src="./js/login.js"></script>
+  <script type="module">
+    import { getTheme, wireThemeToggle } from './js/theme.js';
+    const btn = document.getElementById('theme-toggle-btn');
+    btn.textContent = getTheme() === 'light' ? '🌙' : '☀️';
+    wireThemeToggle(btn);
+  </script>
 </body>
 </html>

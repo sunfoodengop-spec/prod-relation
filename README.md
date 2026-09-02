@@ -83,32 +83,58 @@ python3 -m http.server 8080
 3. ที่ **Source** เลือก `Deploy from a branch` → Branch: `main` → Folder: `/ (root)` → Save
 4. รอ 1–2 นาที เว็บจะพร้อมใช้งานที่ `https://<username>.github.io/<repo-name>/login.html`
 
-### ข้อควรระวัง
-- **`js/config.js` ต้องมีค่า Supabase URL/Key ที่ถูกต้องก่อน push** (เป็นไฟล์ public บน GitHub —
-  ถ้า repo เป็น private ก็ปลอดภัยกว่า แต่ต่อให้เป็น public ก็ยังปลอดภัยเพราะ RLS ล็อกไว้ตามข้อ 2)
-- Supabase Auth **ไม่ได้ถูกใช้งาน** ระบบทำ session เองผ่านตาราง `sessions` — session
-  หมดอายุใน 12 ชั่วโมง (ปรับได้ที่ `sessions.expires_at` default ใน schema.sql)
-- ถ้าต้องการ custom domain ให้เพิ่มไฟล์ `CNAME` ที่ root ตามมาตรฐาน GitHub Pages
+### ⚠️ ข้อควรระวัง (บทเรียนจากรอบที่แล้ว — เจอแล้วอย่าให้ซ้ำ)
 
-## 6. โมดูลที่ทำในเวอร์ชันนี้ (ครบตาม SRS)
+1. **Deploy ผ่านหน้าเว็บ GitHub (ไม่ใช้ git)**: ต้องลาก**ทั้งโฟลเดอร์** `js/`, `css/`,
+   `sql/` ขึ้นไปพร้อมกันเสมอ (เลือกทั้งโฟลเดอร์ ไม่ใช่ไฟล์ข้างในทีละไฟล์ — ไม่งั้น
+   ไฟล์จะหลุดไปกองที่ root ทำให้เปิดเว็บแล้ว 404) และ**ห้ามอัปโหลดไฟล์ `.zip`
+   ตรงๆ** (GitHub ไม่แตกไฟล์ zip ให้อัตโนมัติ) ต้องแตกไฟล์ในเครื่องก่อนแล้วค่อยลาก
+   โฟลเดอร์ที่แตกแล้วขึ้นไป
+2. **`js/config.js` ต้องมีค่า Supabase URL/Key ที่ถูกต้องก่อน push** (เป็นไฟล์ public บน GitHub —
+   ถ้า repo เป็น private ก็ปลอดภัยกว่า แต่ต่อให้เป็น public ก็ยังปลอดภัยเพราะ RLS ล็อกไว้ตามข้อ 2)
+3. **Admin Lockout**: ก่อนลบ/ปิดใช้งานบัญชี ADMIN คนสุดท้ายในระบบทุกครั้ง ต้องตั้ง
+   ADMIN คนใหม่ให้สำเร็จและ login ทดสอบผ่านก่อนเสมอ — ระบบมีการป้องกันในตัว
+   (ลบตัวเองไม่ได้ / SUPERVISOR เลื่อนสิทธิ์ตัวเองเป็น ADMIN ไม่ได้) **แต่การป้องกัน
+   นี้ทำงานเฉพาะตอนใช้งานผ่านแอปเท่านั้น** — ถ้าลบ/แก้ไขผ่าน Supabase
+   **Table Editor** โดยตรงจะข้ามการป้องกันทั้งหมดไปเลย ควรหลีกเลี่ยงการแก้ไข
+   ตาราง `users` ตรงๆ ผ่าน Table Editor
+4. Supabase Auth **ไม่ได้ถูกใช้งาน** ระบบทำ session เองผ่านตาราง `sessions` — session
+   หมดอายุใน 12 ชั่วโมง (ปรับได้ที่ `sessions.expires_at` default ใน schema.sql)
+5. ถ้าต้องการ custom domain ให้เพิ่มไฟล์ `CNAME` ที่ root ตามมาตรฐาน GitHub Pages
+
+## 6. โมดูลที่มีในเวอร์ชันนี้
 
 | Module | สถานะ |
 |---|---|
-| M1 Authentication & Account Management | ✅ |
-| M2 Org Structure & Fallback Routing | ✅ |
-| M3 Goal & Tactical Action Management + Adopt/Cascade | ✅ |
-| M4 Monthly Scoreboard & Approval Workflow | ✅ |
-| M5 Interactive Analytics (Bar/Trend/Gauge/Progress) + Org Network Map | ✅ |
-| M6 Excel Export Engine | ✅ |
+| Authentication & บังคับเปลี่ยนรหัสผ่านครั้งแรก | ✅ |
+| โครงสร้างองค์กร + Fallback Routing (ตำแหน่งว่างข้ามอัตโนมัติ) | ✅ |
+| แผนกจัดการได้จากในแอป (ไม่ hardcode) + พนักงานสังกัดได้หลายแผนก | ✅ |
+| สายบริหาร/สายผู้ชำนาญการ (Dual-Track) + ตำแหน่งสร้างอัตโนมัติ | ✅ |
+| เป้าหมาย & ทีเด็ด + เงื่อนไขประเมินผล (>,≥,<,≤,=) + ถือเป้าร่วม | ✅ |
+| Monthly Scoreboard & Approval Workflow | ✅ |
+| Interactive Analytics (Bar/Trend/Gauge/Progress) | ✅ |
+| ผังองค์กรแบบต้นไม้ (Level × Department, เส้นบัส, สีพื้นหลังแยกแผนก) | ✅ |
+| นำเข้าข้อมูลจาก Excel/Sheet (วาง Tab-separated) — เป้าหมาย/ทีเด็ด/Scoreboard | ✅ |
+| โหมดสว่าง/มืด (จำค่าไว้ที่เครื่อง) | ✅ |
+| Excel Export | ✅ |
 
 ## 7. ข้อจำกัดที่ควรทราบ / แนะนำให้ทดสอบเพิ่ม
 
 - **Fallback Routing**: ระบบอ่านค่า `supervisor_id` ของพนักงานตรงๆ เป็นผู้อนุมัติ
   ดังนั้นเวลาผู้ดูแลระบบตั้งค่าโครงสร้างองค์กร หากตำแหน่งระดับกลางว่างอยู่
   ให้ตั้งค่า `supervisor_id` ของพนักงานคนนั้นชี้ข้ามไปยังหัวหน้าระดับถัดไปที่มี
-  ตัวตนจริงโดยตรง (ไม่ต้องรอระบบคำนวณอัตโนมัติ เพราะโครงสร้างองค์กรที่แท้จริง
-  ควรถูกกำหนดโดยผู้ดูแลระบบ)
-- Org Network Map ใช้ D3.js วาดเป็น Tree Layout (ไม่ใช่ Force-directed) เพื่อความ
-  ชัดเจนของสายบังคับบัญชา คลิกโหนดเพื่อย่อ/ขยาย
+  ตัวตนจริงโดยตรง
+- **สิทธิ์แก้ไขข้ามแผนก**: SUPERVISOR แก้ไขเป้าหมาย/ทีเด็ด/Scoreboard ได้ทั้งลูกน้อง
+  สายตรง และคนแผนกเดียวกันที่ระดับต่ำกว่า — แต่สิทธิ์แก้ไข**ข้อมูลพนักงาน**
+  (ตำแหน่ง/แผนก/ลบ) ยังจำกัดเฉพาะ ADMIN หรือสายบังคับบัญชาตรงเท่านั้น
+- **RETURNS TABLE ชื่อคอลัมน์ชนกัน**: ถ้าเพิ่ม RPC ใหม่ที่มี `returns table (...)`
+  ซึ่งชื่อคอลัมน์ผลลัพธ์ตรงกับชื่อคอลัมน์จริงในตาราง (เช่น `department`, `role`,
+  `user_id`) ต้องใส่ table alias กำกับทุกจุดที่อ้างคอลัมน์นั้นในฟังก์ชันเสมอ
+  ไม่งั้นจะได้ error "column reference is ambiguous"
+- **Cascade delete**: ทุกจุดที่ query ตารางลูก-แม่ร่วมกัน (เช่น tactics-goals)
+  ต้องเช็ค `is_active` ของ**ทั้งคู่** ไม่ใช่แค่ตารางลูกอย่างเดียว
+- **Patch แบบเรียงลำดับ**: อย่าแก้ `schema.sql` ตรงๆ หลัง deploy ไปแล้ว ให้สร้างไฟล์
+  `patch_XXX_ชื่อเรื่อง.sql` ใหม่ทุกครั้ง เขียนด้วย `create or replace function`
+  (idempotent รันซ้ำได้ปลอดภัย) แล้วรันตามลำดับเลขที่ Supabase SQL Editor
 - ควรทดสอบกรณี Concurrent edit (สองคนแก้ไข Goal เดียวกันพร้อมกัน) เพิ่มเติมก่อนใช้งานจริง
 - แนะนำเปลี่ยนรหัสผ่านบัญชี ADMIN ตัวอย่าง (900001) ทันทีหลัง deploy จริง

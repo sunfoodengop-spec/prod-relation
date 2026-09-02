@@ -34,6 +34,35 @@
   --shadow: 0 8px 24px rgba(0,0,0,.35);
 }
 
+/* โหมดสว่าง — ขาว/เทาอ่อน ตัวหนังสือกรมท่าเข้ม อ่านง่ายเป็นทางการ */
+:root[data-theme="light"] {
+  --bg:        #F4F6FB;
+  --bg-panel:  #FFFFFF;
+  --bg-panel-2:#EEF1F8;
+  --bg-hover:  #E4E9F5;
+  --border:    #D8DEEC;
+  --text:      #142042;
+  --text-muted:#5B6786;
+  --text-dim:  #8993AD;
+
+  --accent:    #3D5CDB;
+  --accent-dim:#C4CFF5;
+  --green:     #1E9E5A;
+  --green-bg:  rgba(30,158,90,.10);
+  --amber:     #B9820A;
+  --amber-bg:  rgba(185,130,10,.12);
+  --red:       #D33A44;
+  --red-bg:    rgba(211,58,68,.10);
+
+  --shadow: 0 4px 16px rgba(20,32,66,.08);
+}
+:root[data-theme="light"] body {
+  background-image:
+    radial-gradient(ellipse 900px 500px at 15% -10%, rgba(61,92,219,.06), transparent),
+    radial-gradient(ellipse 700px 400px at 100% 0%, rgba(30,158,90,.05), transparent);
+}
+.theme-toggle-btn { font-size: 16px; padding: 6px 10px; }
+
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -180,6 +209,8 @@ td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align:
 tr:last-child td { border-bottom: none; }
 tr.clickable:hover { background: var(--bg-hover); cursor: pointer; }
 .month-cell input { width: 84px; padding: 6px 8px; font-size: 13px; }
+.day-cell { padding: 4px !important; }
+.day-cell input { width: 52px; padding: 4px 5px; font-size: 12px; text-align: center; }
 
 /* Login page */
 .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
@@ -244,6 +275,19 @@ tr.clickable:hover { background: var(--bg-hover); cursor: pointer; }
 .org-tree-node .achv-bar { width: 60px; height: 4px; border-radius: 999px; background: var(--bg-panel-2); overflow: hidden; }
 .org-tree-node .achv-bar > span { display: block; height: 100%; }
 .org-tree-node .achv-val { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
+.org-tree-node.specialist { border-style: dashed; border-width: 1.5px; }
+.org-tree-node .track-tag { font-size: 9.5px; color: var(--accent); border: 1px dashed var(--accent); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+.org-tree-node.multi-dept { border-color: var(--amber); }
+.org-tree-dept-bg {
+  position: absolute; top: 0; border-radius: var(--radius); pointer-events: none;
+}
+/* วนสีพื้นหลังแยกคอลัมน์แผนกให้อ่อนพอไม่กลบตัวหนังสือ */
+.org-tree-dept-bg.c0 { background: rgba(108,140,255,.05); }
+.org-tree-dept-bg.c1 { background: rgba(53,201,122,.05); }
+.org-tree-dept-bg.c2 { background: rgba(245,185,63,.05); }
+.org-tree-dept-bg.c3 { background: rgba(240,85,92,.05); }
+.org-tree-dept-bg.c4 { background: rgba(170,108,255,.05); }
+.org-tree-dept-bg.c5 { background: rgba(76,201,240,.05); }
 .org-tree-level-label {
   position: absolute; left: 0; transform: translateY(-50%); font-size: 11px; color: var(--text-dim);
   text-transform: uppercase; letter-spacing: .05em; writing-mode: vertical-rl;

@@ -1,117 +1,200 @@
 import { api } from '../api.js';
 import { toast, openModal, closeModal, confirmDialog, MONTHS_TH, escapeHtml as esc, OPERATOR_SYMBOL, OPERATOR_LABEL_TH } from '../ui.js';
 import { CURRENT_YEAR_CE } from '../config.js';
-
-const LEVELS = [85, 75, 65, 55, 40]; // บนสุด -> ล่างสุด
-const LEVEL_LABEL = { 85: 'GM', 75: 'ผจก.ฝ่าย', 65: 'ผจก.ส่วน', 55: 'ผจก.แผนก', 40: 'จนท.' };
-
-// จัดกลุ่มแผนกย่อยเข้าเป็น 6 สายงานหลักตามที่ระบุไว้
-const DEPT_GROUPS = [
-  { key: 'วัตถุดิบ', label: 'วัตถุดิบ', match: ['วัตถุดิบ', 'LB', 'EVI'] },
-  { key: 'OH', label: 'OH', match: ['OH'] },
-  { key: 'CUT-UP', label: 'CUT-UP', match: ['CUT-UP'] },
-  { key: 'SBB', label: 'SBB / SWP', match: ['SBB', 'SWP'] },
-  { key: 'SMP-IVQF', label: 'SMP-IVQF', match: ['SMP-IVQF', 'SBL-YTR', 'SBL', 'YTR', 'IVQF-SMP'] },
-  { key: 'บรรจุ', label: 'บรรจุ', match: ['บรรจุ', 'Freeze', 'PAC', 'วางแผน'] },
-];
-function groupOf(dept) {
-  if (!dept) return null;
-  const g = DEPT_GROUPS.find(g => g.match.includes(dept));
-  return g ? g.key : 'อื่นๆ';
-}
+import { openImportModal } from '../importCsv.js';
+import { GOALS_IMPORT_HEADERS, TACTICS_IMPORT_HEADERS, SCOREBOARD_IMPORT_HEADERS, importGoalsFromRows, importTacticsFromRows, importScoreboardFromRows } from '../goalImport.js';
 
 // ---- Layout constants (px) -------------------------------------------------
-const CARD_W = 172, CARD_H = 62, CARD_GAP_Y = 12, COL_GAP = 30, ROW_GAP = 60;
-const HEADER_H = 30, GM_ROW_H = 70, TOP_MARGIN = 16, LEFT_MARGIN = 70;
+const CARD_W = 172, CARD_H = 62, CARD_GAP_Y = 12, CARD_GAP_X = 10, COL_GAP = 30, ROW_GAP = 60;
+const HEADER_H = 30, TOP_MARGIN = 16, LEFT_MARGIN = 24;
 
 let allPeople = [];
 let byId = new Map();
+let departments = []; // [{dept_key, label, sort_order}]
 let currentUser = null;
+let subordinateIds = new Set(); // สำหรับ SUPERVISOR เช็คสิทธิ์ลบ (Admin ไม่ต้องเช็ค)
+let lastContainer = null;
+let colorIndex = new Map(); // dept_key -> 0..5 (สำหรับสีพื้นหลังคอลัมน์)
+
+function deptKeysOf(p) {
+  return (p.department || '').split(',').filter(Boolean);
+}
 
 export async function render(container, ctx) {
   currentUser = ctx.user;
+  lastContainer = container;
   container.innerHTML = `<div class="loading-page"><span class="spinner"></span></div>`;
 
-  allPeople = await api.getOrgChart();
+  [allPeople, departments] = await Promise.all([api.getOrgChart(), api.listDepartments()]);
   if (!allPeople.length) {
     container.innerHTML = `<div class="card"><div class="empty-state"><div class="icon">🕸️</div>ไม่มีข้อมูลผังองค์กรที่คุณมีสิทธิ์เห็น</div></div>`;
     return;
   }
   byId = new Map(allPeople.map(p => [p.user_id, p]));
 
-  const gm = allPeople.find(p => p.org_level >= 85);
-  const rest = allPeople.filter(p => p.org_level < 85);
+  subordinateIds = new Set();
+  if (currentUser.role === 'SUPERVISOR') {
+    try { (await api.getSubordinates()).forEach(s => subordinateIds.add(s.user_id)); } catch { /* ignore */ }
+  }
 
-  const columns = DEPT_GROUPS.filter(g => rest.some(p => groupOf(p.department) === g.key));
-  if (rest.some(p => groupOf(p.department) === 'อื่นๆ')) columns.push({ key: 'อื่นๆ', label: 'อื่นๆ' });
+  // คนที่ไม่มีแผนก (เช่น GM/ผู้บริหาร) วาดเป็นแถวคานกลางเหนือ Matrix แผนก
+  const topPeople = allPeople.filter(p => deptKeysOf(p).length === 0);
+  const rest = allPeople.filter(p => deptKeysOf(p).length > 0);
 
-  const rows = LEVELS.filter(lv => lv < 85);
+  drawTree(topPeople, rest, container);
+  allPeople.forEach(p => loadAchievementBadge(p.user_id));
+}
 
-  // จำนวนคนมากสุดในแต่ละแถว (ทุกคอลัมน์รวมกัน) เพื่อกำหนดความสูงแถว
-  const cellPeople = {}; // `${level}|${colKey}` -> [people]
-  rows.forEach(lv => columns.forEach(col => {
-    cellPeople[`${lv}|${col.key}`] = rest.filter(p => p.org_level === lv && groupOf(p.department) === col.key);
-  }));
-  const rowMaxCount = {};
-  rows.forEach(lv => {
-    rowMaxCount[lv] = Math.max(1, ...columns.map(col => cellPeople[`${lv}|${col.key}`].length || 1));
+// ============================================================================
+// Layout: จัดกลุ่มคอลัมน์แผนกให้แผนกที่มีหัวหน้าร่วม (คุมมากกว่า 1 แผนก) อยู่
+// ติดกันเสมอ (Union-Find เรียงคอลัมน์เท่านั้น ไม่ได้ merge ความกว้างคอลัมน์)
+// ============================================================================
+function buildColumnOrder(rest) {
+  const used = new Set();
+  rest.forEach(p => deptKeysOf(p).forEach(k => used.add(k)));
+  const cols = departments.filter(d => used.has(d.dept_key));
+  const parent = new Map(cols.map(c => [c.dept_key, c.dept_key]));
+  function find(x) { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; }
+  function union(a, b) { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); }
+
+  rest.forEach(p => {
+    const keys = deptKeysOf(p).filter(k => used.has(k));
+    for (let i = 1; i < keys.length; i++) union(keys[0], keys[i]);
   });
 
-  const colX = {};
-  columns.forEach((col, i) => { colX[col.key] = LEFT_MARGIN + i * (CARD_W + COL_GAP) + CARD_W / 2; });
-  const totalWidth = LEFT_MARGIN + columns.length * (CARD_W + COL_GAP) - COL_GAP + 30;
+  const groupMinOrder = new Map();
+  cols.forEach(c => {
+    const root = find(c.dept_key);
+    groupMinOrder.set(root, Math.min(groupMinOrder.get(root) ?? Infinity, c.sort_order));
+  });
 
-  let y = TOP_MARGIN + HEADER_H + GM_ROW_H / 2;
-  const gmY = y;
-  y += GM_ROW_H / 2 + ROW_GAP;
+  return [...cols].sort((a, b) => {
+    const ga = groupMinOrder.get(find(a.dept_key)), gb = groupMinOrder.get(find(b.dept_key));
+    if (ga !== gb) return ga - gb;
+    return a.sort_order - b.sort_order;
+  });
+}
 
-  const rowTop = {};
+function drawTree(topPeople, rest, container) {
+  const columns = buildColumnOrder(rest);
+  columns.forEach((c, i) => { if (!colorIndex.has(c.dept_key)) colorIndex.set(c.dept_key, i % 6); });
+
+  const levels = [...new Set(rest.map(p => p.org_level))].sort((a, b) => b - a);
+
+  // ---- แบ่งคนในแต่ละ (ระดับ x คอลัมน์) เป็น solo (แผนกเดียว) และ multi (คุมหลายแผนก)
+  const soloCell = {}; // `${level}|${deptKey}` -> [people] เรียงตาม emp_code, MANAGEMENT ก่อน SPECIALIST
+  const multiAtLevel = {}; // `${level}` -> [people ที่คุมหลายแผนก]
+  levels.forEach(lv => { multiAtLevel[lv] = []; columns.forEach(c => { soloCell[`${lv}|${c.dept_key}`] = []; }); });
+
+  rest.forEach(p => {
+    const keys = deptKeysOf(p).filter(k => columns.some(c => c.dept_key === k));
+    if (keys.length === 0) return;
+    if (keys.length === 1) {
+      soloCell[`${p.org_level}|${keys[0]}`]?.push(p);
+    } else {
+      multiAtLevel[p.org_level]?.push(p);
+    }
+  });
+  const byEmpTrack = (a, b) => (a.track === b.track ? (a.emp_code || '').localeCompare(b.emp_code || '') : (a.track === 'MANAGEMENT' ? -1 : 1));
+  Object.values(soloCell).forEach(arr => arr.sort(byEmpTrack));
+
+  // ---- ความกว้างแต่ละคอลัมน์ = จำนวนคนมากสุดในแถวใดๆ ของคอลัมน์นั้น (แนวนอน)
+  const colWidth = {};
+  columns.forEach(c => {
+    const maxCount = Math.max(1, ...levels.map(lv => soloCell[`${lv}|${c.dept_key}`].length || 1));
+    colWidth[c.dept_key] = maxCount * (CARD_W + CARD_GAP_X) - CARD_GAP_X;
+  });
+  const colX = {}; // center
+  let cx = LEFT_MARGIN;
+  columns.forEach(c => { colX[c.dept_key] = cx + colWidth[c.dept_key] / 2; cx += colWidth[c.dept_key] + COL_GAP; });
+  const totalWidth = Math.max(cx - COL_GAP + LEFT_MARGIN, CARD_W + 60);
+  const centerX = totalWidth / 2;
+
   const nodePos = new Map(); // user_id -> {x, y}
-  rows.forEach(lv => {
-    const rowH = rowMaxCount[lv] * (CARD_H + CARD_GAP_Y) - CARD_GAP_Y;
+  const busY = {}; // level -> y ของเส้นบัสใต้แถวระดับนั้น
+  let y = TOP_MARGIN;
+
+  // ---- แถวผู้บริหาร/ไม่มีแผนก (วางกึ่งกลาง ซ้อนจากบนลงล่างตามระดับ) --------
+  const topLevels = [...new Set(topPeople.map(p => p.org_level))].sort((a, b) => b - a);
+  topLevels.forEach(lv => {
+    const people = topPeople.filter(p => p.org_level === lv);
+    const rowW = people.length * (CARD_W + COL_GAP) - COL_GAP;
+    people.forEach((p, i) => {
+      nodePos.set(p.user_id, { x: centerX - rowW / 2 + CARD_W / 2 + i * (CARD_W + COL_GAP), y: y + CARD_H / 2 });
+    });
+    busY[lv] = y + CARD_H + ROW_GAP / 2;
+    y += CARD_H + ROW_GAP;
+  });
+
+  // ---- แถว Matrix แผนก -------------------------------------------------------
+  y += HEADER_H;
+  const colLabelY = y - HEADER_H;
+  const rowTop = {};
+  levels.forEach(lv => {
+    const hasMulti = multiAtLevel[lv].length > 0;
     rowTop[lv] = y;
-    columns.forEach(col => {
-      const people = cellPeople[`${lv}|${col.key}`];
-      people.forEach((p, idx) => {
-        nodePos.set(p.user_id, { x: colX[col.key], y: y + idx * (CARD_H + CARD_GAP_Y) + CARD_H / 2 });
+    let rowY = y;
+
+    if (hasMulti) {
+      const people = multiAtLevel[lv];
+      people.forEach(p => {
+        const keys = deptKeysOf(p).filter(k => columns.some(c => c.dept_key === k));
+        const xs = keys.map(k => colX[k]);
+        const widths = keys.map(k => colWidth[k]);
+        const leftEdge = Math.min(...keys.map((k, i) => xs[i] - widths[i] / 2));
+        const rightEdge = Math.max(...keys.map((k, i) => xs[i] + widths[i] / 2));
+        nodePos.set(p.user_id, { x: (leftEdge + rightEdge) / 2, y: rowY + CARD_H / 2 });
+      });
+      rowY += CARD_H + CARD_GAP_Y;
+    }
+
+    columns.forEach(c => {
+      const people = soloCell[`${lv}|${c.dept_key}`];
+      const rowW = people.length * (CARD_W + CARD_GAP_X) - CARD_GAP_X;
+      people.forEach((p, i) => {
+        nodePos.set(p.user_id, { x: colX[c.dept_key] - rowW / 2 + CARD_W / 2 + i * (CARD_W + CARD_GAP_X), y: rowY + CARD_H / 2 });
       });
     });
+
+    const rowH = (hasMulti ? CARD_H + CARD_GAP_Y : 0) + CARD_H;
+    busY[lv] = y + rowH + ROW_GAP / 2;
     y += rowH + ROW_GAP;
   });
   const totalHeight = y - ROW_GAP + 20;
 
-  if (gm) nodePos.set(gm.user_id, { x: totalWidth / 2, y: gmY });
-
-  // ---- เส้นเชื่อม (SVG) -----------------------------------------------------
+  // ---- เส้นเชื่อมแบบ "เส้นบัส" คงที่ต่อระดับหัวหน้า (ไม่ผันแปรทีละคู่) -------
   const links = [];
   allPeople.forEach(p => {
     if (!p.supervisor_id) return;
+    const sup = byId.get(p.supervisor_id);
     const from = nodePos.get(p.supervisor_id);
     const to = nodePos.get(p.user_id);
-    if (!from || !to) return;
-    const midY = (from.y + CARD_H / 2 + to.y - CARD_H / 2) / 2;
-    links.push(`<path d="M ${from.x} ${from.y + (p.supervisor_id === gm?.user_id ? GM_ROW_H / 2 : CARD_H / 2)} V ${midY} H ${to.x} V ${to.y - CARD_H / 2}" class="org-link" fill="none" />`);
+    if (!from || !to || !sup) return;
+    const bus = busY[sup.org_level] ?? (from.y + CARD_H / 2 + 20);
+    links.push(`<path d="M ${from.x} ${from.y + CARD_H / 2} V ${bus} H ${to.x} V ${to.y - CARD_H / 2}" class="org-link" fill="none" />`);
   });
+
+  const deptBgs = columns.map(c => `
+    <div class="org-tree-dept-bg c${colorIndex.get(c.dept_key)}"
+         style="left:${colX[c.dept_key] - colWidth[c.dept_key] / 2 - 8}px;width:${colWidth[c.dept_key] + 16}px;height:${totalHeight}px;top:0"></div>
+  `).join('');
 
   container.innerHTML = `
     <div class="card mb-16" style="padding:10px 14px">
       <p class="text-muted" style="margin:0;font-size:13px">
-        คลิกที่การ์ดพนักงานเพื่อดูเป้าหมาย/ทีเด็ด/Scoreboard ${currentUser.role === 'ADMIN' ? '· สิทธิ์ผู้ดูแลระบบสามารถเพิ่ม/แก้ไขเป้าหมายและทีเด็ดของทุกคนได้จากหน้านี้' : ''}
+        คลิกที่การ์ดพนักงานเพื่อดูเป้าหมาย/ทีเด็ด/Scoreboard ${currentUser.role === 'ADMIN' ? '· สิทธิ์ผู้ดูแลระบบสามารถเพิ่ม/แก้ไขเป้าหมาย ทีเด็ด และลบพนักงานได้จากหน้านี้' : '· ผู้บังคับบัญชาสามารถลบลูกน้องในสายงานของตนได้'}
       </p>
     </div>
     <div class="org-tree-wrap">
       <div class="org-tree-canvas" style="width:${totalWidth}px;height:${totalHeight}px">
-        ${columns.map(col => `<div class="org-tree-col-label" style="left:${colX[col.key]}px;top:${TOP_MARGIN}px;width:${CARD_W}px">${esc(col.label)}</div>`).join('')}
+        ${deptBgs}
+        ${columns.map(c => `<div class="org-tree-col-label" style="left:${colX[c.dept_key]}px;top:${colLabelY}px;width:${colWidth[c.dept_key]}px">${esc(c.label)}</div>`).join('')}
         <svg class="org-tree-svg" width="${totalWidth}" height="${totalHeight}">
           <style>.org-link { stroke: var(--border); stroke-width: 1.6px; }</style>
           ${links.join('')}
         </svg>
-        ${rows.map(lv => `<div class="org-tree-level-label" style="top:${rowTop[lv] + (rowMaxCount[lv] * (CARD_H + CARD_GAP_Y) - CARD_GAP_Y) / 2}px">${LEVEL_LABEL[lv]}</div>`).join('')}
-        ${gm ? nodeHtml(gm, nodePos.get(gm.user_id), true) : ''}
-        ${rest.map(p => {
-          const pos = nodePos.get(p.user_id);
-          return pos ? nodeHtml(p, pos, false) : '';
-        }).join('')}
+        ${topPeople.map(p => nodeHtml(p, nodePos.get(p.user_id), true)).join('')}
+        ${rest.map(p => { const pos = nodePos.get(p.user_id); return pos ? nodeHtml(p, pos, false) : ''; }).join('')}
       </div>
     </div>
   `;
@@ -119,14 +202,15 @@ export async function render(container, ctx) {
   container.querySelectorAll('[data-person]').forEach(el => {
     el.onclick = () => openPersonModal(Number(el.dataset.person));
   });
-
-  allPeople.forEach(p => loadAchievementBadge(p.user_id));
 }
 
-function nodeHtml(p, pos, isGm) {
+function nodeHtml(p, pos, isTop) {
+  const isMulti = deptKeysOf(p).length > 1;
+  const isSpecialist = p.track === 'SPECIALIST';
+  const cls = [isTop ? 'gm-node' : '', isSpecialist ? 'specialist' : '', isMulti ? 'multi-dept' : ''].filter(Boolean).join(' ');
   return `
-    <div class="org-tree-node ${isGm ? 'gm-node' : ''}" data-person="${p.user_id}" style="left:${pos.x}px;top:${pos.y}px">
-      <div class="name">${isGm ? '👑 ' : ''}${esc(p.first_name)} ${esc(p.last_name)}</div>
+    <div class="org-tree-node ${cls}" data-person="${p.user_id}" style="left:${pos.x}px;top:${pos.y}px">
+      <div class="name">${isTop ? '👑 ' : ''}${esc(p.first_name)} ${esc(p.last_name)}${isSpecialist ? '<span class="track-tag">ชช.</span>' : ''}</div>
       <div class="pos">${esc(p.position_title || '')}</div>
       <div class="achv-row" id="achv-${p.user_id}">
         <div class="achv-bar"><span style="width:0%;background:var(--border)"></span></div>
@@ -154,7 +238,7 @@ async function loadAchievementBadge(userId) {
 }
 
 // ============================================================================
-// Modal: ดู + (ถ้า ADMIN) แก้ไข เป้าหมาย/ทีเด็ด/Scoreboard ของบุคคล
+// Modal: ดู + (ถ้า ADMIN) แก้ไข เป้าหมาย/ทีเด็ด/Scoreboard ของบุคคล + ลบพนักงาน
 // ============================================================================
 async function openPersonModal(userId) {
   const person = byId.get(userId);
@@ -178,6 +262,8 @@ async function refreshPersonModal(backdrop, userId, person) {
   }
 
   const canEdit = currentUser.role === 'ADMIN';
+  const canDelete = userId !== currentUser.user_id &&
+    (currentUser.role === 'ADMIN' || (currentUser.role === 'SUPERVISOR' && subordinateIds.has(userId)));
 
   const rowsHtml = goals.map(g => {
     const monthly = scoreboard.filter(s => s.goal_id === g.goal_id);
@@ -216,9 +302,13 @@ async function refreshPersonModal(backdrop, userId, person) {
     <div class="flex-between" style="align-items:flex-start">
       <div>
         <h3 style="margin:0 0 2px">${esc(person.first_name)} ${esc(person.last_name)} ${person.nickname ? `(${esc(person.nickname)})` : ''}</h3>
-        <p class="text-muted" style="margin:0;font-size:13px">${esc(person.position_title)} ${person.department ? '· ' + esc(person.department) : ''}</p>
+        <p class="text-muted" style="margin:0;font-size:13px">${esc(person.position_title)}</p>
       </div>
-      ${canEdit ? `<button class="btn btn-primary btn-sm" id="add-goal-btn">+ เพิ่มเป้าหมาย</button>` : ''}
+      <div class="flex gap-8">
+        ${canDelete ? `<button class="btn btn-sm btn-danger" id="delete-person-btn">🗑️ ลบพนักงาน</button>` : ''}
+        ${canEdit ? `<button class="btn btn-sm" id="import-btn">📥 นำเข้า Excel</button>` : ''}
+        ${canEdit ? `<button class="btn btn-primary btn-sm" id="add-goal-btn">+ เพิ่มเป้าหมาย</button>` : ''}
+      </div>
     </div>
     <div style="overflow-x:auto;margin-top:14px">
       ${goals.length ? `
@@ -240,7 +330,11 @@ async function refreshPersonModal(backdrop, userId, person) {
   `;
 
   backdrop.querySelector('#close-btn').onclick = () => closeModal(backdrop);
+  if (canDelete) {
+    backdrop.querySelector('#delete-person-btn').onclick = () => deletePerson(userId, person, backdrop);
+  }
   if (canEdit) {
+    backdrop.querySelector('#import-btn').onclick = () => openPersonImportChooser(userId, goals, backdrop, person);
     backdrop.querySelector('#add-goal-btn').onclick = () => openGoalEditModal(null, userId, backdrop);
     backdrop.querySelectorAll('[data-edit-goal]').forEach(b => b.onclick = () => openGoalEditModal(goals.find(g => g.goal_id == b.dataset.editGoal), userId, backdrop));
     backdrop.querySelectorAll('[data-del-goal]').forEach(b => b.onclick = async () => {
@@ -262,6 +356,77 @@ async function refreshPersonModal(backdrop, userId, person) {
       catch (err) { toast(err.message, 'error'); }
     });
   }
+}
+
+function openPersonImportChooser(userId, goals, parentBackdrop, person) {
+  const chooser = openModal(`
+    <h3 style="margin-top:0">📥 นำเข้า Excel — ${esc(person.first_name)} ${esc(person.last_name)}</h3>
+    <div class="flex gap-8" style="flex-direction:column">
+      <button class="btn" id="choose-goals">🎯 นำเข้าเป้าหมาย</button>
+      <button class="btn" id="choose-tactics">⚡ นำเข้าทีเด็ด</button>
+      <button class="btn" id="choose-scoreboard">🗓️ นำเข้าผลงานรายเดือน (12 เดือน)</button>
+    </div>
+    <div class="flex gap-8 mt-16" style="justify-content:flex-end">
+      <button class="btn" id="cancel-btn">ยกเลิก</button>
+    </div>
+  `);
+  chooser.querySelector('#cancel-btn').onclick = () => closeModal(chooser);
+  const ownGoals = goals.filter(g => !g.is_shared);
+
+  chooser.querySelector('#choose-goals').onclick = () => {
+    closeModal(chooser);
+    openImportModal({
+      title: 'เป้าหมาย', headers: GOALS_IMPORT_HEADERS, blankFilename: 'เป้าหมาย.csv',
+      hint: 'จับคู่ด้วย "ชื่อเป้าหมาย" — ถ้ามีอยู่แล้วจะอัปเดตทับ ถ้าไม่พบจะสร้างใหม่',
+      prefillRows: ownGoals.map(g => [g.goal_title, g.metric_unit || '', g.target_value ?? '', OPERATOR_SYMBOL[g.evaluation_operator] || '>=', g.weight_percentage ?? '']),
+      onImport: async (rows) => {
+        const result = await importGoalsFromRows(userId, CURRENT_YEAR_CE, rows, ownGoals);
+        await refreshPersonModal(parentBackdrop, userId, person);
+        return result;
+      },
+    });
+  };
+  chooser.querySelector('#choose-tactics').onclick = () => {
+    closeModal(chooser);
+    openImportModal({
+      title: 'ทีเด็ด', headers: TACTICS_IMPORT_HEADERS, blankFilename: 'ทีเด็ด.csv',
+      hint: 'ต้องมี "ชื่อเป้าหมายที่แนบ" ตรงกับเป้าหมายที่มีอยู่แล้วเท่านั้น',
+      prefillRows: ownGoals.flatMap(g => g.tactics.map(t => [g.goal_title, t.tactic_title, t.action_plan_description || ''])),
+      onImport: async (rows) => {
+        const result = await importTacticsFromRows(userId, rows, ownGoals);
+        await refreshPersonModal(parentBackdrop, userId, person);
+        return result;
+      },
+    });
+  };
+  chooser.querySelector('#choose-scoreboard').onclick = () => {
+    closeModal(chooser);
+    openImportModal({
+      title: 'ผลงานจริงรายเดือน', headers: SCOREBOARD_IMPORT_HEADERS, blankFilename: 'ผลงานรายเดือน.csv',
+      hint: 'จับคู่ด้วย "ชื่อเป้าหมาย" เว้นช่องเดือนที่ไม่มีข้อมูลไว้ได้',
+      prefillRows: ownGoals.map(g => [g.goal_title, ...Array(12).fill('')]),
+      onImport: async (rows) => {
+        const result = await importScoreboardFromRows(rows, ownGoals, CURRENT_YEAR_CE);
+        await refreshPersonModal(parentBackdrop, userId, person);
+        return result;
+      },
+    });
+  };
+}
+
+async function deletePerson(userId, person, backdrop) {
+  const ok = await confirmDialog(
+    `ลบ "${person.first_name} ${person.last_name}" ออกจากระบบใช่หรือไม่? ` +
+    `ลูกน้องโดยตรงของคนนี้จะถูกเลื่อนขึ้นไปอยู่ใต้ผู้บังคับบัญชาของเขาแทนโดยอัตโนมัติ ` +
+    `(ประวัติเป้าหมาย/Scoreboard ที่เคยบันทึกไว้จะยังอยู่ครบ)`
+  );
+  if (!ok) return;
+  try {
+    await api.deactivateUser(userId);
+    closeModal(backdrop);
+    toast('ลบพนักงานเรียบร้อย');
+    if (lastContainer) await render(lastContainer, { user: currentUser });
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 function openGoalEditModal(goal, targetUserId, parentBackdrop) {

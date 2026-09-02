@@ -1,5 +1,7 @@
 import { requireLoginOrRedirect, getUser, clearSession } from './session.js';
 import { initials } from './ui.js';
+import { getTheme, wireThemeToggle } from './theme.js';
+import { api } from './api.js';
 
 if (!requireLoginOrRedirect()) {
   throw new Error('redirecting to login');
@@ -16,16 +18,26 @@ const PAGE_TITLES = {
 
 // ---- Topbar user ----------------------------------------------------------
 document.getElementById('topbar-user').innerHTML = `
+  <button class="btn btn-sm theme-toggle-btn" id="theme-toggle-btn" title="สลับโหมดสว่าง/มืด">${getTheme() === 'light' ? '🌙' : '☀️'}</button>
   <span>${user.first_name} ${user.last_name} <span class="role-badge">${ROLE_LABEL[user.role] || user.role}</span></span>
   <div class="avatar">${initials(user.first_name, user.last_name)}</div>
   <button class="btn btn-sm" id="logout-btn">ออกจากระบบ</button>
 `;
+wireThemeToggle(document.getElementById('theme-toggle-btn'));
 document.getElementById('logout-btn').onclick = () => {
   clearSession();
   window.location.href = './login.html';
 };
-document.getElementById('sidebar-foot').innerHTML =
-  `${user.position_title}${user.department ? ' · ' + user.department : ''}`;
+document.getElementById('sidebar-foot').innerHTML = esc(user.position_title || '');
+api.listDepartments().then(depts => {
+  const labels = (user.department || '').split(',').filter(Boolean)
+    .map(k => depts.find(d => d.dept_key === k)?.label || k);
+  if (labels.length) {
+    document.getElementById('sidebar-foot').innerHTML = `${esc(user.position_title || '')} · ${esc(labels.join(', '))}`;
+  }
+}).catch(() => { /* ignore */ });
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
 
 // ---- Role-based nav visibility ---------------------------------------------
 if (user.role === 'STAFF') {

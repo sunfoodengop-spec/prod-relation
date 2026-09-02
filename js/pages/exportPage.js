@@ -2,12 +2,18 @@ import { api } from '../api.js';
 import { toast, MONTHS_TH, escapeHtml as esc } from '../ui.js';
 import { CURRENT_YEAR_CE } from '../config.js';
 
+let deptList = []; // [{dept_key, label}]
+function deptLabel(key) { return deptList.find(d => d.dept_key === key)?.label || key; }
+function deptLabelsOf(p) { return (p.department || '').split(',').filter(Boolean).map(deptLabel).join(', '); }
+
 export async function render(container, { user }) {
   let people = [{ user_id: user.user_id, first_name: user.first_name, last_name: user.last_name, department: user.department, position_title: user.position_title }];
   if (user.role !== 'STAFF') {
     try { people = people.concat(await api.getSubordinates()); } catch { /* ignore */ }
   }
-  const departments = [...new Set(people.map(p => p.department).filter(Boolean))];
+  try { deptList = await api.listDepartments(); } catch { deptList = []; }
+
+  const usedDeptKeys = [...new Set(people.flatMap(p => (p.department || '').split(',').filter(Boolean)))];
 
   container.innerHTML = `
     <div class="card" style="max-width:560px">
@@ -15,9 +21,9 @@ export async function render(container, { user }) {
       <div class="field"><label>ปีงบประมาณ</label>
         <input id="f-year" type="number" value="${CURRENT_YEAR_CE}">
       </div>
-      ${departments.length ? `
+      ${usedDeptKeys.length ? `
         <div class="field"><label>แผนก</label>
-          <select id="f-dept"><option value="">ทั้งหมด</option>${departments.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('')}</select>
+          <select id="f-dept"><option value="">ทั้งหมด</option>${usedDeptKeys.map(k => `<option value="${esc(k)}">${esc(deptLabel(k))}</option>`).join('')}</select>
         </div>` : ''}
       <div class="field"><label>รายบุคคล</label>
         <select id="f-person">
@@ -41,7 +47,7 @@ async function doExport(people) {
   const personId = document.getElementById('f-person').value;
 
   let targets = people;
-  if (dept) targets = targets.filter(p => p.department === dept);
+  if (dept) targets = targets.filter(p => (p.department || '').split(',').includes(dept));
   if (personId) targets = targets.filter(p => String(p.user_id) === personId);
 
   if (!targets.length) { toast('ไม่พบพนักงานตามเงื่อนไขที่เลือก', 'error'); return; }
@@ -66,7 +72,7 @@ async function doExport(people) {
 
         summaryRows.push({
           'รหัสพนักงาน': p.emp_code || '', 'ชื่อ-นามสกุล': `${p.first_name} ${p.last_name}`,
-          'ตำแหน่ง': p.position_title || '', 'แผนก': p.department || '',
+          'ตำแหน่ง': p.position_title || '', 'แผนก': deptLabelsOf(p) || '',
           'เป้าหมาย': g.goal_title, 'ตัวชี้วัด': g.metric_unit || '', 'น้ำหนัก (%)': g.weight_percentage ?? '',
           '% Achievement เฉลี่ย': overallAchv,
         });

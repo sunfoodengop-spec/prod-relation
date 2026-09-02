@@ -30,6 +30,7 @@ create type approval_status as enum ('DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED
 create type status_color as enum ('GREEN', 'YELLOW', 'RED');
 create type adopt_target as enum ('GOAL', 'TACTIC');
 create type eval_operator as enum ('GT', 'GTE', 'LT', 'LTE', 'EQ'); -- เงื่อนไขประเมินผล: > / >= / < / <= / =
+create type person_track as enum ('MANAGEMENT', 'SPECIALIST'); -- สายบริหาร vs สายผู้ชำนาญการ
 
 -- ============================================================================
 -- 2. TABLES
@@ -43,9 +44,11 @@ create table users (
     first_name        varchar(100) not null,
     last_name         varchar(100) not null,
     nickname          varchar(50),
-    position_title    varchar(150) not null,
-    department        varchar(100),
-    org_level         smallint not null default 1,        -- 1=จนท. 2=จัดการแผนก 3=จัดการส่วน 4=จัดการฝ่าย 5=จัดการทั่วไป
+    position_title    varchar(150) not null,               -- คำนวณอัตโนมัติจาก org_level+track+is_acting เสมอ (ดู _compute_position_title) — ห้ามให้ผู้ใช้พิมพ์เอง
+    department        varchar(300),                          -- dept_key หลายค่าคั่นด้วย comma เช่น 'DEPT_A,DEPT_B' (อ้างอิงตาราง departments)
+    org_level         smallint not null default 40,       -- ปรับตามจริงของแต่ละองค์กร ค่าเริ่มต้นที่ใช้: 80=ผู้จัดการทั่วไป, 75=ผจก.ฝ่าย/ผู้เชี่ยวชาญพิเศษ, 65=ผจก.ส่วน/ผู้เชี่ยวชาญ, 55=ผจก.แผนก/ผู้ชำนาญการพิเศษ, 40=เจ้าหน้าที่/ผู้ชำนาญการ
+    track             person_track not null default 'MANAGEMENT', -- สายบริหาร หรือ สายผู้ชำนาญการ (ขนานกันคนละสายที่ org_level เดียวกันได้)
+    is_acting         boolean not null default false,       -- รักษาการ (แสดงนำหน้าตำแหน่งอัตโนมัติ)
     supervisor_id     int references users(user_id),      -- ผู้บังคับบัญชาโดยตรง (fallback ถูก "baked" ไว้ในค่านี้:
                                                             -- ถ้าตำแหน่งระดับกลางว่าง ให้ตั้งค่านี้ชี้ข้ามไปยังระดับถัดไปเลย)
     role              user_role not null default 'STAFF',
@@ -90,14 +93,15 @@ create table tactics (
 );
 
 -- 2.5 Scoreboard Monthly ----------------------------------------------------
--- หมายเหตุ: เก็บเฉพาะ "ผลจริง" รายเดือนเท่านั้น เป้าหมาย (target) อ่านจาก
--- goals.target_value เพียงจุดเดียวเสมอ (Single Source of Truth) — variance/
--- achievement%/status_color คำนวณสดทุกครั้งที่อ่าน ไม่ถูกเก็บซ้ำในตารางนี้
+-- หมายเหตุ: เก็บเฉพาะ "สถานะการอนุมัติ" รายเดือนเท่านั้น (DRAFT/SUBMITTED/
+-- APPROVED/REJECTED) — ตัวเลขผลงานจริงกรอกเป็นรายวันที่ตาราง scoreboard_daily
+-- แทน ผลรายเดือนที่แสดงผลคือค่าเฉลี่ยของรายวันในเดือนนั้น คำนวณสดทุกครั้งที่
+-- อ่าน ไม่ถูกเก็บซ้ำในตารางนี้ เป้าหมาย (target) อ่านจาก goals.target_value
+-- เพียงจุดเดียวเสมอ (Single Source of Truth)
 create table scoreboard_monthly (
     scoreboard_id           serial primary key,
     goal_id                 int not null references goals(goal_id) on delete cascade,
     month_num               int not null check (month_num between 1 and 12),
-    actual_val              decimal(10,2),
     approval_status         approval_status not null default 'DRAFT',
     reviewer_comments       text,
     reviewed_by             int references users(user_id),
@@ -105,13 +109,41 @@ create table scoreboard_monthly (
     unique (goal_id, month_num)
 );
 
+-- 2.5b Scoreboard Daily — ผลงานจริงกรอกทีละวัน (Single Source of Truth ของค่าจริง)
+create table scoreboard_daily (
+    daily_id     serial primary key,
+    goal_id      int not null references goals(goal_id) on delete cascade,
+    entry_date   date not null,
+    actual_val   decimal(10,2),
+    updated_at   timestamptz not null default now(),
+    unique (goal_id, entry_date)
+);
+
 create index idx_goals_user_year on goals(user_id, year);
 create index idx_tactics_goal on tactics(goal_id);
 create index idx_scoreboard_goal_month on scoreboard_monthly(goal_id, month_num);
+create index idx_scoreboard_daily_goal_date on scoreboard_daily(goal_id, entry_date);
 create index idx_users_supervisor on users(supervisor_id);
 create index idx_sessions_user on sessions(user_id);
 
--- 2.6 Goal Co-Owners (ถือเป้าร่วม) -------------------------------------------
+-- 2.6 Departments (จัดการแผนกได้จากในแอป ไม่ hardcode) ------------------------
+create table departments (
+    dept_key    varchar(50) primary key,
+    label       varchar(100) not null,
+    sort_order  int not null default 0,
+    is_active   boolean not null default true,
+    created_at  timestamptz not null default now()
+);
+
+-- 2.7 Position Titles (สร้างชื่อตำแหน่งอัตโนมัติจาก org_level + track) -------
+create table position_titles (
+    org_level   smallint not null,
+    track       person_track not null,
+    title       varchar(150) not null,
+    primary key (org_level, track)
+);
+
+-- 2.8 Goal Co-Owners (ถือเป้าร่วม) -------------------------------------------
 -- หัวหน้า "ถือร่วม" เป้าหมายของลูกน้องโดยอ้างอิง goal_id เดิมโดยตรง ไม่คัดลอก
 -- ข้อมูลใดๆ ทีเด็ด/ผลบันทึก Scoreboard จึงเป็นแถวเดียวกันกับที่ลูกน้องกรอกเสมอ
 create table goal_co_owners (
@@ -131,7 +163,10 @@ alter table sessions enable row level security;
 alter table goals enable row level security;
 alter table tactics enable row level security;
 alter table scoreboard_monthly enable row level security;
+alter table scoreboard_daily enable row level security;
 alter table goal_co_owners enable row level security;
+alter table departments enable row level security;
+alter table position_titles enable row level security;
 -- ไม่สร้าง policy ใดๆ ต่อจากนี้ = deny-all สำหรับ anon/authenticated โดย default
 
 -- ============================================================================
@@ -182,6 +217,47 @@ begin
         v_depth := v_depth + 1;
     end loop;
     return false;
+end;
+$$;
+
+-- 4.2b คำนวณตำแหน่งอัตโนมัติจาก org_level + track + is_acting — ห้ามให้
+--      ผู้ใช้พิมพ์ตำแหน่งเอง (กันตำแหน่งปนชื่อแผนก / สะกดไม่ตรงกัน)
+create or replace function _compute_position_title(p_org_level smallint, p_track person_track, p_is_acting boolean)
+returns varchar
+language plpgsql
+security definer
+as $$
+declare
+    v_title varchar;
+begin
+    select pt.title into v_title from position_titles pt
+        where pt.org_level = p_org_level and pt.track = p_track;
+    if v_title is null then
+        v_title := (case p_track when 'SPECIALIST' then 'ผู้ชำนาญการ' else 'เจ้าหน้าที่' end)
+            || ' (ระดับ ' || p_org_level || ')';
+    end if;
+    if p_is_acting then
+        v_title := 'รักษาการ' || v_title;
+    end if;
+    return v_title;
+end;
+$$;
+
+-- 4.2c เช็คว่าแผนกของสองคนทับซ้อนกันหรือไม่ (comma-separated dept_key overlap)
+create or replace function _shares_department(p_dept_a varchar, p_dept_b varchar)
+returns boolean
+language plpgsql
+immutable
+as $$
+declare
+    a text[]; b text[];
+begin
+    if p_dept_a is null or p_dept_b is null or p_dept_a = '' or p_dept_b = '' then
+        return false;
+    end if;
+    a := string_to_array(p_dept_a, ',');
+    b := string_to_array(p_dept_b, ',');
+    return a && b; -- Postgres array overlap operator
 end;
 $$;
 
@@ -367,7 +443,8 @@ create or replace function get_subordinates(p_session_token uuid)
 returns table (
     user_id int, emp_code varchar, first_name varchar, last_name varchar,
     nickname varchar, position_title varchar, department varchar,
-    role user_role, org_level smallint, supervisor_id int
+    role user_role, org_level smallint, supervisor_id int,
+    track person_track, is_acting boolean
 )
 language plpgsql
 security definer
@@ -381,7 +458,8 @@ begin
 
     if v_role = 'ADMIN' then
         return query select u.user_id, u.emp_code, u.first_name, u.last_name, u.nickname,
-            u.position_title, u.department, u.role, u.org_level, u.supervisor_id
+            u.position_title, u.department, u.role, u.org_level, u.supervisor_id,
+            u.track, u.is_acting
             from users u where u.is_active = true order by u.org_level, u.first_name;
         return;
     end if;
@@ -393,20 +471,24 @@ begin
         select u.user_id from users u join sub s on u.supervisor_id = s.user_id
     )
     select u.user_id, u.emp_code, u.first_name, u.last_name, u.nickname,
-           u.position_title, u.department, u.role, u.org_level, u.supervisor_id
+           u.position_title, u.department, u.role, u.org_level, u.supervisor_id,
+           u.track, u.is_acting
     from users u join sub on u.user_id = sub.user_id
     where u.is_active = true
     order by u.org_level, u.first_name;
 end;
 $$;
 
--- 6.2 คืนผังองค์กรทั้งหมดที่ผู้ใช้มีสิทธิ์เห็น (สำหรับ Network Map)
---     STAFF/SUPERVISOR เห็นเฉพาะตนเอง+สายบังคับบัญชาด้านบน+ลูกน้องทั้งหมด, ADMIN เห็นทั้งองค์กร
+-- 6.2 คืนผังองค์กรทั้งหมดที่ผู้ใช้มีสิทธิ์เห็น (สำหรับ Org Chart)
+--     ADMIN เห็นทั้งองค์กร — ทุก Role อื่นเห็น: ตนเอง + สายบังคับบัญชาด้านบน
+--     (ให้เห็นบริบทถึงยอดสุด) + ลูกน้องทุกระดับ + ทุกคนในแผนกเดียวกัน (ไม่ต้อง
+--     อยู่สายบังคับบัญชาเดียวกันก็เห็นได้ ถ้าอยู่แผนกเดียวกัน)
 create or replace function get_org_chart(p_session_token uuid)
 returns table (
     user_id int, emp_code varchar, first_name varchar, last_name varchar, nickname varchar,
     position_title varchar, department varchar, org_level smallint,
-    supervisor_id int, avatar_url text, role user_role
+    supervisor_id int, avatar_url text, role user_role,
+    track person_track, is_acting boolean
 )
 language plpgsql
 security definer
@@ -414,16 +496,19 @@ as $$
 declare
     v_uid int;
     v_role user_role;
+    v_my_dept varchar;
 begin
     v_uid := _current_user_id(p_session_token);
     select u2.role into v_role from users u2 where u2.user_id = v_uid;
 
     if v_role = 'ADMIN' then
         return query select u.user_id, u.emp_code, u.first_name, u.last_name, u.nickname, u.position_title,
-            u.department, u.org_level, u.supervisor_id, u.avatar_url, u.role
+            u.department, u.org_level, u.supervisor_id, u.avatar_url, u.role, u.track, u.is_acting
             from users u where u.is_active = true;
         return;
     end if;
+
+    select department into v_my_dept from users where user_id = v_uid;
 
     return query
     with recursive up as ( -- ตัวเองและสายบังคับบัญชาด้านบน
@@ -435,15 +520,19 @@ begin
         select u.* from users u where u.supervisor_id = v_uid
         union all
         select u.* from users u join down d on u.supervisor_id = d.user_id
+    ),
+    same_dept as ( -- ทุกคนในแผนกเดียวกัน
+        select u.* from users u where _shares_department(u.department, v_my_dept)
     )
     select x.user_id, x.emp_code, x.first_name, x.last_name, x.nickname, x.position_title,
-           x.department, x.org_level, x.supervisor_id, x.avatar_url, x.role
-    from (select * from up union select * from down) x
+           x.department, x.org_level, x.supervisor_id, x.avatar_url, x.role, x.track, x.is_acting
+    from (select * from up union select * from down union select * from same_dept) x
     where x.is_active = true;
 end;
 $$;
 
--- 6.3 Admin/Supervisor: สร้างหรือแก้ไขพนักงาน
+-- 6.3 Admin/Supervisor: สร้างหรือแก้ไขพนักงาน — ตำแหน่งคำนวณอัตโนมัติเสมอ
+--     (ไม่รับตำแหน่งที่พิมพ์เอง กันตำแหน่งปนชื่อแผนก/สะกดไม่ตรงกัน)
 create or replace function upsert_user(
     p_session_token uuid,
     p_target_user_id int,          -- null = สร้างใหม่
@@ -451,9 +540,10 @@ create or replace function upsert_user(
     p_first_name varchar,
     p_last_name varchar,
     p_nickname varchar,
-    p_position_title varchar,
-    p_department varchar,
+    p_departments varchar,          -- dept_key คั่นด้วย comma เช่น 'DEPT_A,DEPT_B'
     p_org_level smallint,
+    p_track person_track,
+    p_is_acting boolean,
     p_supervisor_id int,
     p_role user_role
 )
@@ -465,6 +555,7 @@ declare
     v_uid int;
     v_caller_role user_role;
     v_new_id int;
+    v_title varchar;
 begin
     v_uid := _current_user_id(p_session_token);
     select u2.role into v_caller_role from users u2 where u2.user_id = v_uid;
@@ -474,6 +565,7 @@ begin
     end if;
 
     -- SUPERVISOR แก้ไขได้เฉพาะลูกน้องของตน (ทางตรง/ทางอ้อม) และห้ามตั้ง role เป็น ADMIN
+    -- (สิทธิ์นี้ไม่ขยายตามกติกา "แผนกเดียวกัน" ที่ _can_manage มี — ตั้งใจ เพื่อความปลอดภัย)
     if v_caller_role = 'SUPERVISOR' then
         if p_target_user_id is not null and not _is_supervisor_of(v_uid, p_target_user_id) then
             raise exception 'FORBIDDEN';
@@ -483,21 +575,71 @@ begin
         end if;
     end if;
 
+    v_title := _compute_position_title(p_org_level, p_track, p_is_acting);
+
     if p_target_user_id is null then
         insert into users (emp_code, password_hash, first_name, last_name, nickname,
-            position_title, department, org_level, supervisor_id, role)
+            position_title, department, org_level, track, is_acting, supervisor_id, role)
         values (p_emp_code, crypt(p_emp_code, gen_salt('bf')), p_first_name, p_last_name,
-            p_nickname, p_position_title, p_department, p_org_level, p_supervisor_id, p_role)
+            p_nickname, v_title, p_departments, p_org_level, p_track, coalesce(p_is_acting, false),
+            p_supervisor_id, p_role)
         returning user_id into v_new_id;
         return v_new_id;
     else
         update users set
             emp_code = p_emp_code, first_name = p_first_name, last_name = p_last_name,
-            nickname = p_nickname, position_title = p_position_title, department = p_department,
-            org_level = p_org_level, supervisor_id = p_supervisor_id, role = p_role
+            nickname = p_nickname, position_title = v_title, department = p_departments,
+            org_level = p_org_level, track = p_track, is_acting = coalesce(p_is_acting, false),
+            supervisor_id = p_supervisor_id, role = p_role
         where user_id = p_target_user_id;
         return p_target_user_id;
     end if;
+end;
+$$;
+
+-- 6.3b จัดการแผนก (Admin เท่านั้น) — ห้าม hardcode รายชื่อแผนกในโค้ด
+create or replace function list_departments(p_session_token uuid)
+returns table (dept_key varchar, label varchar, sort_order int)
+language plpgsql
+security definer
+as $$
+declare v_uid int;
+begin
+    v_uid := _current_user_id(p_session_token); -- แค่ต้อง login ก็ดูรายการแผนกได้
+    return query select d.dept_key, d.label, d.sort_order from departments d
+        where d.is_active = true order by d.sort_order, d.label;
+end;
+$$;
+
+create or replace function upsert_department(p_session_token uuid, p_dept_key varchar, p_label varchar, p_sort_order int)
+returns boolean
+language plpgsql
+security definer
+as $$
+declare v_uid int; v_role user_role;
+begin
+    v_uid := _current_user_id(p_session_token);
+    select u2.role into v_role from users u2 where u2.user_id = v_uid;
+    if v_role <> 'ADMIN' then raise exception 'FORBIDDEN'; end if;
+
+    insert into departments (dept_key, label, sort_order)
+    values (p_dept_key, p_label, coalesce(p_sort_order, 0))
+    on conflict (dept_key) do update set
+        label = excluded.label, sort_order = excluded.sort_order, is_active = true;
+    return true;
+end;
+$$;
+
+create or replace function list_position_titles(p_session_token uuid)
+returns table (org_level smallint, track person_track, title varchar)
+language plpgsql
+security definer
+as $$
+declare v_uid int;
+begin
+    v_uid := _current_user_id(p_session_token);
+    return query select pt.org_level, pt.track, pt.title from position_titles pt
+        order by pt.org_level desc, pt.track;
 end;
 $$;
 
@@ -523,20 +665,65 @@ begin
 end;
 $$;
 
+-- 6.5 ลบพนักงาน (Soft Delete) — Admin หรือผู้บังคับบัญชาที่สูงกว่าเท่านั้น
+--     ลูกน้องโดยตรงของคนที่ถูกลบจะถูกเลื่อนขึ้นไปอยู่ใต้ผู้บังคับบัญชาของเขาแทน
+create or replace function deactivate_user(p_session_token uuid, p_target_user_id int)
+returns boolean
+language plpgsql
+security definer
+as $$
+declare
+    v_uid int; v_role user_role; v_target_supervisor int;
+begin
+    v_uid := _current_user_id(p_session_token);
+    select u2.role into v_role from users u2 where u2.user_id = v_uid;
+
+    if v_uid = p_target_user_id then
+        raise exception 'CANNOT_DELETE_SELF';
+    end if;
+
+    if v_role <> 'ADMIN' and not _is_supervisor_of(v_uid, p_target_user_id) then
+        raise exception 'FORBIDDEN';
+    end if;
+
+    select supervisor_id into v_target_supervisor from users where user_id = p_target_user_id;
+
+    update users set supervisor_id = v_target_supervisor
+    where supervisor_id = p_target_user_id;
+
+    update users set is_active = false where user_id = p_target_user_id;
+
+    return true;
+end;
+$$;
+
 -- ============================================================================
 -- 7. GOAL & TACTIC RPCs
 -- ============================================================================
 
--- ตรวจสิทธิ์แก้ไขข้อมูลของ target_user_id (ตนเอง / หัวหน้าของเขา / admin)
+-- ตรวจสิทธิ์แก้ไขข้อมูลของ target_user_id (ตนเอง / หัวหน้าของเขา /
+-- คนแผนกเดียวกันที่ระดับต่ำกว่า / admin) — ใช้กับ Goal/Tactic/Scoreboard
+-- RPC เท่านั้น ไม่ใช้กับการแก้ไขข้อมูลพนักงาน (upsert_user มีเช็คแยกของตัวเอง)
 create or replace function _can_manage(p_uid int, p_role user_role, p_target int)
 returns boolean
 language plpgsql
 security definer
 as $$
+declare
+    v_uid_dept varchar; v_uid_level smallint;
+    v_target_dept varchar; v_target_level smallint;
 begin
     if p_role = 'ADMIN' then return true; end if;
     if p_uid = p_target then return true; end if;
-    if p_role = 'SUPERVISOR' and _is_supervisor_of(p_uid, p_target) then return true; end if;
+    if p_role = 'SUPERVISOR' then
+        if _is_supervisor_of(p_uid, p_target) then return true; end if;
+
+        select department, org_level into v_uid_dept, v_uid_level from users where user_id = p_uid;
+        select department, org_level into v_target_dept, v_target_level from users where user_id = p_target;
+        if _shares_department(v_uid_dept, v_target_dept) and v_target_level < v_uid_level then
+            return true;
+        end if;
+    end if;
     return false;
 end;
 $$;
@@ -625,6 +812,7 @@ begin
     select u2.role into v_role from users u2 where u2.user_id = v_uid;
     select user_id into v_owner from goals where goal_id = p_goal_id;
     if not _can_manage(v_uid, v_role, v_owner) then raise exception 'FORBIDDEN'; end if;
+    update tactics set is_active = false where goal_id = p_goal_id;
     update goals set is_active = false where goal_id = p_goal_id;
     return true;
 end;
@@ -722,9 +910,9 @@ $$;
 -- 8. SCOREBOARD & APPROVAL RPCs
 -- ============================================================================
 
--- 8.1 บันทึกผลงานจริงรายเดือน (upsert) — เป้าหมายอ่านจาก goals.target_value เสมอ
-create or replace function upsert_scoreboard(
-    p_session_token uuid, p_goal_id int, p_month_num int, p_actual_val decimal
+-- 8.1 บันทึกผลงานจริงรายวัน (upsert) — เป้าหมายอ่านจาก goals.target_value เสมอ
+create or replace function upsert_scoreboard_daily(
+    p_session_token uuid, p_goal_id int, p_entry_date date, p_actual_val decimal
 )
 returns int
 language plpgsql
@@ -738,19 +926,58 @@ begin
     select user_id into v_owner from goals where goal_id = p_goal_id;
     if not _can_manage(v_uid, v_role, v_owner) then raise exception 'FORBIDDEN'; end if;
 
-    insert into scoreboard_monthly (goal_id, month_num, actual_val)
-    values (p_goal_id, p_month_num, p_actual_val)
-    on conflict (goal_id, month_num) do update set
-        actual_val = excluded.actual_val,
-        approval_status = case when scoreboard_monthly.approval_status = 'REJECTED' then 'DRAFT' else scoreboard_monthly.approval_status end,
-        updated_at = now()
-    returning scoreboard_id into v_id;
+    insert into scoreboard_daily (goal_id, entry_date, actual_val)
+    values (p_goal_id, p_entry_date, p_actual_val)
+    on conflict (goal_id, entry_date) do update set
+        actual_val = excluded.actual_val, updated_at = now()
+    returning daily_id into v_id;
+
+    -- ถ้าเดือนนี้เคยถูกตีกลับ (REJECTED) การแก้ไขรายวันใหม่จะดึงกลับมาเป็น DRAFT
+    update scoreboard_monthly
+        set approval_status = 'DRAFT', reviewer_comments = null
+        where goal_id = p_goal_id
+          and month_num = extract(month from p_entry_date)::int
+          and approval_status = 'REJECTED';
 
     return v_id;
 end;
 $$;
 
--- 8.2 ดึง Scoreboard ทั้งปีของคนใดคนหนึ่ง (คำนวณ target/variance/achievement/status สดเสมอ)
+-- 8.1b ดึงผลงานรายวันของเดือนที่เลือก (สำหรับมุมมอง "รายวัน")
+create or replace function get_scoreboard_daily(
+    p_session_token uuid, p_target_user_id int, p_year int, p_month_num int
+)
+returns table (
+    goal_id int, goal_title text, entry_date date, actual_val decimal
+)
+language plpgsql
+security definer
+as $$
+declare
+    v_uid int; v_role user_role;
+begin
+    v_uid := _current_user_id(p_session_token);
+    select u2.role into v_role from users u2 where u2.user_id = v_uid;
+    if not _can_manage(v_uid, v_role, p_target_user_id) then raise exception 'FORBIDDEN'; end if;
+
+    return query
+    select g.goal_id, g.goal_title, d.entry_date::date, s.actual_val
+    from goals g
+    cross join lateral generate_series(
+        make_date(p_year, p_month_num, 1),
+        (make_date(p_year, p_month_num, 1) + interval '1 month' - interval '1 day')::date,
+        interval '1 day'
+    ) as d(entry_date)
+    left join scoreboard_daily s on s.goal_id = g.goal_id and s.entry_date = d.entry_date::date
+    where g.year = p_year and g.is_active = true
+      and (g.user_id = p_target_user_id
+           or exists (select 1 from goal_co_owners co where co.goal_id = g.goal_id and co.holder_user_id = p_target_user_id))
+    order by g.goal_id, d.entry_date;
+end;
+$$;
+
+-- 8.2 ดึง Scoreboard ทั้งปีของคนใดคนหนึ่ง (มุมมอง "เฉลี่ยรายเดือน" — ผลจริง
+--     คือค่าเฉลี่ยของรายวันในเดือนนั้น คำนวณสดเสมอ)
 create or replace function get_scoreboard(p_session_token uuid, p_target_user_id int, p_year int)
 returns table (
     goal_id int, goal_title text, weight_percentage decimal,
@@ -771,15 +998,23 @@ begin
     return query
     select g.goal_id, g.goal_title, g.weight_percentage, mn.month_num,
            g.target_value as target_val,
-           s.actual_val,
-           case when s.actual_val is null then null else s.actual_val - g.target_value end as variance_val,
-           _calc_achievement_pct(g.target_value, s.actual_val, g.evaluation_operator) as achievement_percentage,
-           _calc_status_color(g.target_value, s.actual_val, g.evaluation_operator) as status_color,
+           avgd.avg_val as actual_val,
+           case when avgd.avg_val is null then null else avgd.avg_val - g.target_value end as variance_val,
+           _calc_achievement_pct(g.target_value, avgd.avg_val, g.evaluation_operator) as achievement_percentage,
+           _calc_status_color(g.target_value, avgd.avg_val, g.evaluation_operator) as status_color,
            coalesce(s.approval_status, 'DRAFT') as approval_status,
            s.reviewer_comments
     from goals g
     cross join generate_series(1,12) as mn(month_num)
     left join scoreboard_monthly s on s.goal_id = g.goal_id and s.month_num = mn.month_num
+    left join lateral (
+        select round(avg(d.actual_val), 2) as avg_val
+        from scoreboard_daily d
+        where d.goal_id = g.goal_id
+          and extract(year from d.entry_date)::int = p_year
+          and extract(month from d.entry_date)::int = mn.month_num
+          and d.actual_val is not null
+    ) avgd on true
     where g.year = p_year and g.is_active = true
       and (g.user_id = p_target_user_id
            or exists (select 1 from goal_co_owners co where co.goal_id = g.goal_id and co.holder_user_id = p_target_user_id))
@@ -788,6 +1023,7 @@ end;
 $$;
 
 -- 8.3 ส่งรายงานประจำเดือน (DRAFT/REJECTED -> SUBMITTED) ให้หัวหน้าตรวจ
+--     (upsert เพราะ scoreboard_monthly ไม่ถูกสร้างอัตโนมัติตอนกรอกรายวันแล้ว)
 create or replace function submit_monthly_report(p_session_token uuid, p_year int, p_month_num int)
 returns int
 language plpgsql
@@ -797,10 +1033,15 @@ declare
     v_uid int; v_count int;
 begin
     v_uid := _current_user_id(p_session_token);
-    update scoreboard_monthly s set approval_status = 'SUBMITTED', reviewer_comments = null
+
+    insert into scoreboard_monthly (goal_id, month_num, approval_status)
+    select g.goal_id, p_month_num, 'SUBMITTED'
     from goals g
-    where g.goal_id = s.goal_id and g.user_id = v_uid and g.year = p_year
-      and s.month_num = p_month_num and s.approval_status in ('DRAFT','REJECTED');
+    where g.user_id = v_uid and g.year = p_year and g.is_active = true
+    on conflict (goal_id, month_num) do update set
+        approval_status = 'SUBMITTED', reviewer_comments = null, updated_at = now()
+        where scoreboard_monthly.approval_status in ('DRAFT', 'REJECTED');
+
     get diagnostics v_count = row_count;
     return v_count;
 end;
@@ -882,10 +1123,16 @@ begin
             select coalesce(json_agg(x order by x.month_num), '[]'::json) from (
                 select mn.month_num,
                        round(sum(g.target_value * g.weight_percentage/100),2) as weighted_target,
-                       round(sum(coalesce(s.actual_val,0) * g.weight_percentage/100),2) as weighted_actual
+                       round(sum(coalesce(avgd.avg_val,0) * g.weight_percentage/100),2) as weighted_actual
                 from goals g
                 cross join generate_series(1,12) as mn(month_num)
-                left join scoreboard_monthly s on s.goal_id = g.goal_id and s.month_num = mn.month_num
+                left join lateral (
+                    select avg(d.actual_val) as avg_val from scoreboard_daily d
+                    where d.goal_id = g.goal_id
+                      and extract(year from d.entry_date)::int = p_year
+                      and extract(month from d.entry_date)::int = mn.month_num
+                      and d.actual_val is not null
+                ) avgd on true
                 where g.year = p_year and g.is_active = true
                   and (g.user_id = p_target_user_id
                        or exists (select 1 from goal_co_owners co where co.goal_id = g.goal_id and co.holder_user_id = p_target_user_id))
@@ -893,17 +1140,36 @@ begin
             ) x
         ),
         'overall_achievement', (
-            select round(avg(_calc_achievement_pct(g.target_value, s.actual_val, g.evaluation_operator)),2)
-            from goals g join scoreboard_monthly s on s.goal_id = g.goal_id
-            where g.year = p_year and g.is_active = true and s.actual_val is not null
+            select round(avg(_calc_achievement_pct(g.target_value, avgd.avg_val, g.evaluation_operator)),2)
+            from goals g
+            cross join generate_series(1,12) as mn(month_num)
+            left join lateral (
+                select avg(d.actual_val) as avg_val from scoreboard_daily d
+                where d.goal_id = g.goal_id
+                  and extract(year from d.entry_date)::int = p_year
+                  and extract(month from d.entry_date)::int = mn.month_num
+                  and d.actual_val is not null
+            ) avgd on true
+            where g.year = p_year and g.is_active = true and avgd.avg_val is not null
               and (g.user_id = p_target_user_id
                    or exists (select 1 from goal_co_owners co where co.goal_id = g.goal_id and co.holder_user_id = p_target_user_id))
         ),
         'tactics_progress', (
             select coalesce(json_agg(json_build_object(
                 'tactic_title', t.tactic_title, 'goal_title', g.goal_title,
-                'goal_achievement', (select round(avg(_calc_achievement_pct(g.target_value, s2.actual_val, g.evaluation_operator)),2)
-                    from scoreboard_monthly s2 where s2.goal_id = g.goal_id and s2.actual_val is not null))), '[]'::json)
+                'goal_achievement', (
+                    select round(avg(_calc_achievement_pct(g.target_value, m.avg_val, g.evaluation_operator)),2)
+                    from (
+                        select mn.month_num,
+                               (select avg(d.actual_val) from scoreboard_daily d
+                                where d.goal_id = g.goal_id
+                                  and extract(year from d.entry_date)::int = p_year
+                                  and extract(month from d.entry_date)::int = mn.month_num
+                                  and d.actual_val is not null) as avg_val
+                        from generate_series(1,12) as mn(month_num)
+                    ) m where m.avg_val is not null
+                )
+            )), '[]'::json)
             from tactics t join goals g on g.goal_id = t.goal_id
             where g.year = p_year and t.is_active = true
               and (g.user_id = p_target_user_id
@@ -918,14 +1184,26 @@ $$;
 -- ============================================================================
 -- 10. SEED DATA (ตัวอย่าง — ลบ/แก้ไขได้ตามข้อมูลจริง)
 -- ============================================================================
+insert into departments (dept_key, label, sort_order) values
+    ('DEPT_A', 'ฝ่าย A (ตัวอย่าง — แก้ไข/เพิ่มแผนกจริงได้ที่หน้าจัดการพนักงาน)', 1),
+    ('DEPT_B', 'ฝ่าย B (ตัวอย่าง)', 2);
+
+insert into position_titles (org_level, track, title) values
+    (80, 'MANAGEMENT', 'ผู้จัดการทั่วไป'),
+    (75, 'MANAGEMENT', 'ผู้จัดการฝ่าย'),  (75, 'SPECIALIST', 'ผู้เชี่ยวชาญพิเศษ'),
+    (65, 'MANAGEMENT', 'ผู้จัดการส่วน'),  (65, 'SPECIALIST', 'ผู้เชี่ยวชาญ'),
+    (55, 'MANAGEMENT', 'ผู้จัดการแผนก'),  (55, 'SPECIALIST', 'ผู้ชำนาญการพิเศษ'),
+    (40, 'MANAGEMENT', 'วิศวกร/เจ้าหน้าที่'), (40, 'SPECIALIST', 'ผู้ชำนาญการ');
+
 -- หมายเหตุ: password ของทุกคน = emp_code ของตนเอง ตามสเปก (บังคับเปลี่ยนตอน login ครั้งแรก)
-insert into users (emp_code, password_hash, first_name, last_name, nickname, position_title, department, org_level, supervisor_id, role) values
-('900001', crypt('900001', gen_salt('bf')), 'สมชาย', 'ผู้บริหาร', 'พี่ชาย', 'ผู้จัดการทั่วไป', 'บริหาร', 5, null, 'ADMIN'),
-('900002', crypt('900002', gen_salt('bf')), 'สมหญิง', 'ฝ่ายวิศวกรรม', 'พี่หญิง', 'ผู้จัดการฝ่าย', 'วิศวกรรม', 4, 1, 'SUPERVISOR'),
-('900003', crypt('900003', gen_salt('bf')), 'วิชัย', 'ส่วนผลิต', 'พี่ชัย', 'ผู้จัดการส่วน', 'วิศวกรรม', 3, 2, 'SUPERVISOR'),
-('443757', crypt('443757', gen_salt('bf')), 'มานะ', 'แผนกซ่อมบำรุง', 'มานะ', 'ผู้จัดการแผนก', 'วิศวกรรม', 2, 3, 'SUPERVISOR'),
-('591144', crypt('591144', gen_salt('bf')), 'สายใจ', 'เจ้าหน้าที่', 'ใจ', 'เจ้าหน้าที่วิศวกรรม', 'วิศวกรรม', 1, 4, 'STAFF'),
-('123456', crypt('123456', gen_salt('bf')), 'ทดสอบ', 'ระบบ', 'เทส', 'เจ้าหน้าที่ทั่วไป', 'ทั่วไป', 1, 4, 'STAFF');
+-- ตำแหน่งคำนวณอัตโนมัติจาก org_level+track ผ่าน _compute_position_title() ด้านบน
+insert into users (emp_code, password_hash, first_name, last_name, nickname, position_title, department, org_level, track, is_acting, supervisor_id, role) values
+('900001', crypt('900001', gen_salt('bf')), 'สมชาย', 'ผู้บริหาร', 'พี่ชาย', _compute_position_title(80,'MANAGEMENT',false), null, 80, 'MANAGEMENT', false, null, 'ADMIN'),
+('900002', crypt('900002', gen_salt('bf')), 'สมหญิง', 'ฝ่ายผลิต', 'พี่หญิง', _compute_position_title(75,'MANAGEMENT',false), 'DEPT_A', 75, 'MANAGEMENT', false, 1, 'SUPERVISOR'),
+('900003', crypt('900003', gen_salt('bf')), 'วิชัย', 'ส่วนผลิต', 'พี่ชัย', _compute_position_title(65,'MANAGEMENT',false), 'DEPT_A', 65, 'MANAGEMENT', false, 2, 'SUPERVISOR'),
+('443757', crypt('443757', gen_salt('bf')), 'มานะ', 'แผนกซ่อมบำรุง', 'มานะ', _compute_position_title(55,'MANAGEMENT',false), 'DEPT_A', 55, 'MANAGEMENT', false, 3, 'SUPERVISOR'),
+('591144', crypt('591144', gen_salt('bf')), 'สายใจ', 'เจ้าหน้าที่', 'ใจ', _compute_position_title(40,'MANAGEMENT',false), 'DEPT_A', 40, 'MANAGEMENT', false, 4, 'STAFF'),
+('123456', crypt('123456', gen_salt('bf')), 'ทดสอบ', 'ระบบ', 'เทส', _compute_position_title(40,'SPECIALIST',false), 'DEPT_B', 40, 'SPECIALIST', false, 4, 'STAFF');
 
 -- Grant execute บน RPC ทั้งหมดให้ anon + authenticated (ตัวฟังก์ชันเองตรวจสิทธิ์ภายในอยู่แล้ว)
 grant usage on schema public to anon, authenticated;

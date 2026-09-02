@@ -1,6 +1,8 @@
 import { api } from '../api.js';
 import { toast, openModal, closeModal, confirmDialog, escapeHtml as esc, OPERATOR_SYMBOL, OPERATOR_LABEL_TH } from '../ui.js';
 import { CURRENT_YEAR_CE } from '../config.js';
+import { openImportModal } from '../importCsv.js';
+import { GOALS_IMPORT_HEADERS, TACTICS_IMPORT_HEADERS, importGoalsFromRows, importTacticsFromRows } from '../goalImport.js';
 
 let ctx; // { user }
 let viewingUserId;
@@ -25,7 +27,11 @@ export async function render(container, context) {
           </select>
         ` : ''}
       </div>
-      <button class="btn btn-primary" id="add-goal-btn">+ เพิ่มเป้าหมาย</button>
+      <div class="flex gap-8">
+        <button class="btn btn-primary" id="add-goal-btn">+ เพิ่มเป้าหมาย</button>
+        <button class="btn" id="import-goals-btn">📥 นำเข้าเป้าหมาย</button>
+        <button class="btn" id="import-tactics-btn">📥 นำเข้าทีเด็ด</button>
+      </div>
     </div>
 
     <div id="goals-list"></div>
@@ -42,6 +48,8 @@ export async function render(container, context) {
   `;
 
   document.getElementById('add-goal-btn').onclick = () => openGoalModal(null);
+  document.getElementById('import-goals-btn').onclick = () => openGoalsImportModal(container);
+  document.getElementById('import-tactics-btn').onclick = () => openTacticsImportModal(container);
   const viewerSelect = document.getElementById('viewer-select');
   if (viewerSelect) viewerSelect.onchange = async (e) => {
     viewingUserId = Number(e.target.value);
@@ -244,3 +252,34 @@ async function holdGoal(goalId) {
 }
 
 function numOrNull(v) { return v === '' || v === null || v === undefined ? null : Number(v); }
+
+function openGoalsImportModal(container) {
+  const prefillRows = currentGoals.filter(g => !g.is_shared).map(g => [
+    g.goal_title, g.metric_unit || '', g.target_value ?? '', OPERATOR_SYMBOL[g.evaluation_operator] || '>=', g.weight_percentage ?? '',
+  ]);
+  openImportModal({
+    title: 'เป้าหมาย', headers: GOALS_IMPORT_HEADERS, blankFilename: 'เป้าหมาย.csv',
+    hint: 'จับคู่ด้วย "ชื่อเป้าหมาย" — ถ้ามีอยู่แล้วจะอัปเดตทับ ถ้าไม่พบจะสร้างใหม่',
+    prefillRows,
+    onImport: async (rows) => {
+      const result = await importGoalsFromRows(viewingUserId, CURRENT_YEAR_CE, rows, currentGoals.filter(g => !g.is_shared));
+      await loadGoals(container);
+      return result;
+    },
+  });
+}
+
+function openTacticsImportModal(container) {
+  const prefillRows = currentGoals.filter(g => !g.is_shared)
+    .flatMap(g => g.tactics.map(t => [g.goal_title, t.tactic_title, t.action_plan_description || '']));
+  openImportModal({
+    title: 'ทีเด็ด', headers: TACTICS_IMPORT_HEADERS, blankFilename: 'ทีเด็ด.csv',
+    hint: 'ต้องมี "ชื่อเป้าหมายที่แนบ" ตรงกับเป้าหมายที่มีอยู่แล้วเท่านั้น จับคู่ทีเด็ดด้วยชื่อ',
+    prefillRows,
+    onImport: async (rows) => {
+      const result = await importTacticsFromRows(viewingUserId, rows, currentGoals.filter(g => !g.is_shared));
+      await loadGoals(container);
+      return result;
+    },
+  });
+}
