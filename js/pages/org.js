@@ -112,7 +112,7 @@ function renderReorderTab() {
 
 function renderReorderList() {
   const list = document.getElementById('dept-reorder-list');
-  const sorted = [...departments].sort((a, b) => a.sort_order - b.sort_order);
+  const sorted = [...departments].sort((a, b) => a.sort_order - b.sort_order || a.dept_key.localeCompare(b.dept_key));
   if (!sorted.length) {
     list.innerHTML = `<div class="empty-state"><div class="icon">🗂️</div>ยังไม่มีแผนก — ไปเพิ่มที่หน้า "จัดการพนักงาน" ก่อน</div>`;
     return;
@@ -135,51 +135,38 @@ function renderReorderList() {
 }
 
 async function swapDeptOrder(deptKey, dir) {
-  const sorted = [...departments].sort((a, b) => a.sort_order - b.sort_order);
+  // เรียงลำดับปัจจุบัน (ใช้ dept_key เป็นตัวตัดสินเมื่อ sort_order เท่ากัน กัน
+  // ปัญหาลำดับไม่นิ่ง) แล้วสลับ "ตำแหน่งใน array" จากนั้นเขียน sort_order ใหม่
+  // ทั้งหมดแบบเรียงต่อเนื่อง 0,1,2,... ทุกครั้ง — วิธีนี้การกด ↑/↓ จะเห็นผล
+  // เสมอ แม้ก่อนหน้านี้จะมีแผนกที่ sort_order ซ้ำกันอยู่ก็ตาม
+  const sorted = [...departments].sort((a, b) => a.sort_order - b.sort_order || a.dept_key.localeCompare(b.dept_key));
   const idx = sorted.findIndex(d => d.dept_key === deptKey);
   const swapIdx = idx + dir;
   if (swapIdx < 0 || swapIdx >= sorted.length) return;
-  const a = sorted[idx], b = sorted[swapIdx];
-  const aOrder = a.sort_order, bOrder = b.sort_order;
+  [sorted[idx], sorted[swapIdx]] = [sorted[swapIdx], sorted[idx]];
   try {
-    await Promise.all([
-      api.upsertDepartment(a.dept_key, a.label, bOrder),
-      api.upsertDepartment(b.dept_key, b.label, aOrder),
-    ]);
-    a.sort_order = bOrder; b.sort_order = aOrder;
+    await Promise.all(sorted.map((d, i) => {
+      d.sort_order = i;
+      return api.upsertDepartment(d.dept_key, d.label, i);
+    }));
     renderReorderList();
     toast('ปรับลำดับคอลัมน์แล้ว');
   } catch (err) { toast(err.message, 'error'); }
 }
 
 // ============================================================================
-// Layout: จัดกลุ่มคอลัมน์แผนกให้แผนกที่มีหัวหน้าร่วม (คุมมากกว่า 1 แผนก) อยู่
-// ติดกันเสมอ (Union-Find เรียงคอลัมน์เท่านั้น ไม่ได้ merge ความกว้างคอลัมน์)
+// Layout: ลำดับคอลัมน์แผนก = departments.sort_order ตรงๆ ตามที่แอดมินตั้งไว้
+// ที่หน้า "จัดเรียงคอลัมน์" หรือ "จัดการแผนก" — ไม่มีการจัดกลุ่มอัตโนมัติมา
+// เขียนทับลำดับที่ตั้งเอง
 // ============================================================================
 function buildColumnOrder(rest) {
   const used = new Set();
   rest.forEach(p => deptKeysOf(p).forEach(k => used.add(k)));
-  const cols = departments.filter(d => used.has(d.dept_key));
-  const parent = new Map(cols.map(c => [c.dept_key, c.dept_key]));
-  function find(x) { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; }
-  function union(a, b) { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); }
-
-  rest.forEach(p => {
-    const keys = deptKeysOf(p).filter(k => used.has(k));
-    for (let i = 1; i < keys.length; i++) union(keys[0], keys[i]);
-  });
-
-  const groupMinOrder = new Map();
-  cols.forEach(c => {
-    const root = find(c.dept_key);
-    groupMinOrder.set(root, Math.min(groupMinOrder.get(root) ?? Infinity, c.sort_order));
-  });
-
-  return [...cols].sort((a, b) => {
-    const ga = groupMinOrder.get(find(a.dept_key)), gb = groupMinOrder.get(find(b.dept_key));
-    if (ga !== gb) return ga - gb;
-    return a.sort_order - b.sort_order;
-  });
+  // เรียงตาม sort_order ที่แอดมินตั้งไว้ตรงๆ เสมอ (ไม่มีการจัดกลุ่มอัตโนมัติ
+  // มาเขียนทับ) — ถ้าอยากให้แผนกของคนที่คุมหลายแผนกอยู่ติดกัน ให้ไปจัดเรียง
+  // เอง เพราะการ์ดของเขาจะขยายคลุมพื้นที่ตั้งแต่คอลัมน์ซ้ายสุดถึงขวาสุดที่
+  // เขาคุมอยู่แล้วไม่ว่าจะติดกันหรือไม่
+  return departments.filter(d => used.has(d.dept_key)).sort((a, b) => a.sort_order - b.sort_order);
 }
 
 function drawTree(topPeople, rest, container) {

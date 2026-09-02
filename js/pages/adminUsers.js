@@ -278,7 +278,7 @@ function openDeptManagerModal() {
     </div>
   `);
   const renderList = () => {
-    const sorted = [...allDepartments].sort((a, b) => a.sort_order - b.sort_order);
+    const sorted = [...allDepartments].sort((a, b) => a.sort_order - b.sort_order || a.dept_key.localeCompare(b.dept_key));
     backdrop.querySelector('#dept-list').innerHTML = sorted.length
       ? `<table><thead><tr><th>รหัส</th><th>ชื่อ</th><th></th></tr></thead><tbody>
           ${sorted.map((d, i) => `<tr>
@@ -295,19 +295,20 @@ function openDeptManagerModal() {
     backdrop.querySelectorAll('[data-down]').forEach(b => b.onclick = () => swapOrder(b.dataset.down, 1));
   };
 
+  // เรียงลำดับปัจจุบัน (ตัดเสมอด้วย dept_key) แล้วสลับตำแหน่งใน array จากนั้น
+  // เขียน sort_order ใหม่ทั้งหมดแบบเรียงต่อเนื่อง 0,1,2,... ทุกครั้ง — กันปัญหา
+  // แผนกที่ sort_order เท่ากันอยู่เดิม ทำให้กด ↑/↓ แล้วดูเหมือนไม่มีอะไรเกิดขึ้น
   async function swapOrder(deptKey, dir) {
-    const sorted = [...allDepartments].sort((a, b) => a.sort_order - b.sort_order);
+    const sorted = [...allDepartments].sort((a, b) => a.sort_order - b.sort_order || a.dept_key.localeCompare(b.dept_key));
     const idx = sorted.findIndex(d => d.dept_key === deptKey);
     const swapIdx = idx + dir;
     if (swapIdx < 0 || swapIdx >= sorted.length) return;
-    const a = sorted[idx], b = sorted[swapIdx];
-    const aOrder = a.sort_order, bOrder = b.sort_order;
+    [sorted[idx], sorted[swapIdx]] = [sorted[swapIdx], sorted[idx]];
     try {
-      await Promise.all([
-        api.upsertDepartment(a.dept_key, a.label, bOrder),
-        api.upsertDepartment(b.dept_key, b.label, aOrder),
-      ]);
-      a.sort_order = bOrder; b.sort_order = aOrder;
+      await Promise.all(sorted.map((d, i) => {
+        d.sort_order = i;
+        return api.upsertDepartment(d.dept_key, d.label, i);
+      }));
       renderList();
     } catch (err) { toast(err.message, 'error'); }
   }
